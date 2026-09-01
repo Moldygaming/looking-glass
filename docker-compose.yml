@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lookingglass
+      POSTGRES_PASSWORD: lookingglass
+      POSTGRES_DB: lookingglass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lookingglass"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+    ports:
+      - "10000:10000"
+
+  api:
+    build: ./src/api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lookingglass:lookingglass@postgres:5432/lookingglass
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      WEB_ORIGIN: http://localhost:3000
+      APP_ENV: development
+      SEED_ON_STARTUP: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ./src/api
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lookingglass:lookingglass@postgres:5432/lookingglass
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      WORKER_INTERVAL_SECONDS: "21600"
+      SEED_ON_STARTUP: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  web:
+    build: ./src/web
+    environment:
+      API_URL: http://api:8000
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
+      AUTH_SECRET: ${AUTH_SECRET:-dev-auth-secret-change-me-please-32ch}
+      AUTH_ALLOW_DEMO: "true"
+      NEXTAUTH_URL: http://localhost:3000
+      AUTH_URL: http://localhost:3000
+      AUTH_MICROSOFT_ENTRA_ID_ID: ${AUTH_MICROSOFT_ENTRA_ID_ID:-}
+      AUTH_MICROSOFT_ENTRA_ID_SECRET: ${AUTH_MICROSOFT_ENTRA_ID_SECRET:-}
+      AUTH_MICROSOFT_ENTRA_ID_TENANT_ID: ${AUTH_MICROSOFT_ENTRA_ID_TENANT_ID:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

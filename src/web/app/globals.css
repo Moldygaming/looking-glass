@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 10% -10%, rgba(46, 230, 199, 0.08), transparent 50%),
+    radial-gradient(900px 400px at 100% 0%, rgba(244, 185, 66, 0.06), transparent 45%),
+    #070b14;
+  color: #e8eef7;
+}
+
+.panel {
+  @apply rounded-2xl border border-white/10 bg-ink-800/70 backdrop-blur-xl;
+}
+
+.panel-pad {
+  @apply panel p-5;
+}
+
+.input {
+  @apply w-full rounded-xl border border-white/10 bg-ink-950/80 px-3 py-2 text-sm text-mist-100 outline-none ring-glass/0 transition focus:border-glass/40 focus:ring-2 focus:ring-glass/20;
+}
+
+.label {
+  @apply mb-1.5 block text-[11px] font-medium uppercase tracking-[0.16em] text-mist-500;
+}
+
+.hint {
+  @apply mt-1.5 text-xs leading-relaxed text-mist-500;
+}
+
+.textarea {
+  @apply input min-h-[140px] resize-y font-mono text-xs;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium transition;
+}
+
+.btn-primary {
+  @apply btn bg-glass text-ink-950 hover:bg-glass/90;
+}
+
+.btn-ghost {
+  @apply btn border border-white/10 bg-white/5 text-mist-100 hover:border-glass/30 hover:text-white;
+}
+
+.btn-danger {
+  @apply btn border border-rose/30 bg-rose/10 text-rose hover:bg-rose/20;
+}
+
+.chip {
+  @apply inline-flex items-center rounded-full border border-white/10 bg-white/5 px-2 py-0.5 font-mono text-[11px] uppercase tracking-wide text-mist-400;
+}
+
+.tab {
+  @apply rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-mist-400 transition hover:border-glass/30 hover:text-mist-100;
+}
+
+.tab-active {
+  @apply border-glass/40 bg-glass/10 text-glass;
+}
+
+.table-wrap {
+  @apply overflow-x-auto rounded-2xl border border-white/10;
+}
+
+.admin-table {
+  @apply w-full min-w-[640px] text-left text-sm;
+}
+
+.admin-table th {
+  @apply border-b border-white/10 bg-ink-950/60 px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.14em] text-mist-500;
+}
+
+.admin-table td {
+  @apply border-b border-white/5 px-4 py-3 align-top;
+}
+
+.admin-table tbody tr:hover td {
+  @apply bg-white/[0.02];
+}
+
+input[type="checkbox"] {
+  accent-color: #2ee6c7;
+}
