@@ -67,6 +67,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
   const [busy, setBusy] = useState<"save" | "test" | "ingest" | "delete" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(existing?.last_error || null);
 
   const parsedScope = parseScope(str(initial, "scope"), str(initial, "scope_kind"), str(initial, "scope_value"));
   const [tenantId, setTenantId] = useState(str(initial, "tenant_id"));
@@ -139,6 +140,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         ? await api<Connection>(`/connections/${existing.id}`, { method: "PUT", body: JSON.stringify(body) })
         : await api<Connection>("/connections", { method: "POST", body: JSON.stringify(body) });
       setMessage("Settings saved. Secrets are stored on the server and are never shown again.");
+      setLastError(null);
       if (!existing) router.replace(`/connections/${saved.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -158,8 +160,13 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         ? await api<Connection>(`/connections/${existing.id}`, { method: "PUT", body: JSON.stringify(body) })
         : await api<Connection>("/connections", { method: "POST", body: JSON.stringify(body) });
       const result = await api<{ ok: boolean; message: string }>(`/connections/${saved.id}/test`, { method: "POST" });
-      if (result.ok) setMessage(result.message);
-      else setError(result.message);
+      if (result.ok) {
+        setMessage(result.message);
+        setLastError(null);
+      } else {
+        setError(result.message);
+        setLastError(result.message);
+      }
       if (!existing) router.replace(`/connections/${saved.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Test failed");
@@ -177,6 +184,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
       await api(`/connections/${existing.id}`, { method: "PUT", body: JSON.stringify(payload()) });
       const result = await api<{ written: number }>(`/connections/${existing.id}/ingest`, { method: "POST" });
       setMessage(`Ingest finished. ${result.written} cost rows written.`);
+      setLastError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ingest failed");
     } finally {
@@ -283,7 +291,9 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         <section className="panel-pad space-y-4">
           <h2 className="font-display text-xl">AWS identity</h2>
           <p className="text-sm text-mist-400">
-            Use a payer account IAM user or role with <span className="text-mist-100">ce:GetCostAndUsage</span>. CUR in S3 is optional.
+            Use a payer IAM user with <span className="text-mist-100">ce:GetCostAndUsage</span> and{" "}
+            <span className="text-mist-100">sts:GetCallerIdentity</span>. Cost Explorer is always called in us-east-1
+            (AWS requirement). Daily ingest is by linked account and service.
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
@@ -293,7 +303,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
             <div>
               <label className="label">Region</label>
               <input className="input font-mono" value={region} onChange={(e) => setRegion(e.target.value)} placeholder="eu-west-2" />
-              <p className="hint">Cost Explorer is called in this region. For most orgs that is us-east-1 or your home region.</p>
+              <p className="hint">Home region for this account (display only). Cost Explorer itself is always us-east-1.</p>
             </div>
             <div>
               <label className="label">Access key ID</label>
@@ -392,7 +402,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         </div>
       </section>
 
-      {error && <div className="panel-pad text-sm text-rose">{error}</div>}
+      {(error || lastError) && <div className="panel-pad text-sm text-rose">{error || lastError}</div>}
       {message && <div className="panel-pad text-sm text-glass">{message}</div>}
 
       <div className="flex flex-wrap gap-2">
