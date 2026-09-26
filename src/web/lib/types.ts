@@ -67,6 +67,57 @@ export type HierarchyNode = {
   children: HierarchyNode[];
 };
 
+export type CostObject = {
+  key: string;
+  kind: string;
+  label: string;
+  provider: string;
+  path: string;
+  cost: number;
+  prior_cost: number;
+  delta_pct: number | null;
+  share: number;
+  currency: string;
+  service?: string;
+  category?: string;
+  has_children: boolean;
+};
+
+export type CostObjectFocus = { key: string; kind: string; label: string };
+
+export type CostObjectPage = {
+  path: string[];
+  current_kind: string | null;
+  next_kind: string | null;
+  focus: CostObjectFocus[];
+  objects: CostObject[];
+  currency: string;
+  period_cost: number;
+  prior_period_cost: number;
+  delta_pct: number | null;
+  object_count: number;
+};
+
+export type CostDimension = {
+  key: string;
+  label: string;
+  group: string;
+  description: string;
+};
+
+export type HierarchyPreset = {
+  id: string;
+  name: string;
+  description: string;
+  path: string[];
+};
+
+export type DimensionCatalog = {
+  dimensions: CostDimension[];
+  presets: HierarchyPreset[];
+  default_path: string[];
+};
+
 export type CostSummary = {
   currency: string;
   period_cost: number;
@@ -254,4 +305,200 @@ export type AdminOverview = {
     last_login_at?: string | null;
     status: string;
   }[];
+};
+
+export type DirectorySync = {
+  id: string;
+  started_at: string;
+  finished_at?: string | null;
+  status: string;
+  users_upserted: number;
+  groups_upserted: number;
+  memberships_upserted: number;
+  apps_upserted?: number;
+  assignments_upserted?: number;
+  error?: string | null;
+};
+
+export type EntraTenant = {
+  id: string;
+  name: string;
+  tenant_id: string;
+  client_id: string;
+  domain: string;
+  status: string;
+  enabled: boolean;
+  credentials_configured: boolean;
+  last_error?: string | null;
+  last_synced_at?: string | null;
+  last_sync?: DirectorySync | null;
+  created_at: string;
+};
+
+export type EntraStatus = {
+  configured: boolean;
+  tenant_count?: number;
+  last_sync?: DirectorySync | null;
+  required_permissions: string[];
+  tenants?: EntraTenant[];
+};
+
+export type EntraAppAssignmentRef = {
+  application_id: string;
+  display_name: string;
+  app_id: string;
+  app_role_id: string;
+  app_role_name: string;
+  assignment_required: boolean;
+  is_microsoft: boolean;
+  has_app_registration: boolean;
+};
+
+export type AssignedLicense = {
+  sku_id: string;
+  sku_part_number: string;
+  display_name: string;
+  disabled_plans: string[];
+};
+
+export type EntraUser = {
+  id: string;
+  entra_oid: string;
+  email: string;
+  display_name: string;
+  user_principal_name: string;
+  job_title: string;
+  department: string;
+  usage_location?: string;
+  status: string;
+  source: string;
+  entra_tenant_id?: string | null;
+  last_synced_at?: string | null;
+  last_login_at?: string | null;
+  temporary_password?: string | null;
+  assigned_licenses?: AssignedLicense[];
+  warnings?: string[];
+  app_assignments?: EntraAppAssignmentRef[];
+};
+
+export type EntraLicense = {
+  id: string;
+  tenant_id: string;
+  sku_id: string;
+  sku_part_number: string;
+  display_name: string;
+  consumed_units: number;
+  enabled_units: number;
+  suspended_units: number;
+  warning_units: number;
+  available_units: number;
+  capability_status: string;
+  service_plans: string[];
+};
+
+export type EntraTemplate = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  department: string;
+  job_title: string;
+  usage_location: string;
+  group_ids: string[];
+  license_sku_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type EntraBulkResult = {
+  ok: number;
+  failed: number;
+  results: { row: number; action: string; user_principal_name: string; status: string; detail: string }[];
+};
+
+export type EntraAuditEvent = {
+  id: string;
+  tenant_id?: string | null;
+  actor_email: string;
+  actor_name: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  target_label: string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  graph_request_id?: string | null;
+  status: string;
+  error?: string | null;
+  created_at: string;
+};
+
+export type EntraMember = {
+  entra_user_id: string;
+  user_id?: string | null;
+  display_name?: string | null;
+  email?: string | null;
+  user_principal_name?: string | null;
+  status?: string | null;
+};
+
+export type EntraGroup = {
+  id: string;
+  entra_id: string;
+  display_name: string;
+  description: string;
+  mail: string;
+  mail_nickname: string;
+  security_enabled: boolean;
+  mail_enabled: boolean;
+  member_count: number;
+  last_synced_at?: string | null;
+  members: EntraMember[];
+  app_assignments?: EntraAppAssignmentRef[];
+};
+
+export type EntraAppRole = {
+  id: string;
+  display_name: string;
+  value: string;
+  description: string;
+  enabled: boolean;
+  allowed_member_types: string[];
+};
+
+export type EntraAppAssignment = {
+  id: string;
+  assignment_id: string;
+  principal_id: string;
+  principal_type: string;
+  principal_display_name: string;
+  app_role_id: string;
+  app_role_name: string;
+  user_id?: string | null;
+  group_id?: string | null;
+  email?: string | null;
+  user_principal_name?: string | null;
+  status?: string | null;
+};
+
+export type EntraApp = {
+  id: string;
+  service_principal_id: string;
+  app_id: string;
+  application_object_id: string;
+  display_name: string;
+  description: string;
+  publisher_name: string;
+  account_enabled: boolean;
+  assignment_required: boolean;
+  sign_in_audience: string;
+  homepage: string;
+  is_microsoft: boolean;
+  hidden: boolean;
+  has_app_registration: boolean;
+  user_assignment_count: number;
+  group_assignment_count: number;
+  last_synced_at?: string | null;
+  app_roles: EntraAppRole[];
+  assignments: EntraAppAssignment[];
 };

@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -35,6 +36,16 @@ class User(Base):
     entra_group_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
     status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
     notes: Mapped[str] = mapped_column(Text, default="", server_default="")
+    user_principal_name: Mapped[str] = mapped_column(String(320), default="", server_default="")
+    job_title: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    department: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    usage_location: Mapped[str] = mapped_column(String(8), default="", server_default="")
+    assigned_licenses: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    source: Mapped[str] = mapped_column(String(16), default="local", server_default="local")
+    entra_tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="SET NULL"), index=True
+    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -192,6 +203,204 @@ class UserRole(Base):
 
     user: Mapped[User] = relationship(back_populates="role_links")
     role: Mapped[AccessRole] = relationship(back_populates="user_links")
+
+
+class EntraTenant(Base):
+    __tablename__ = "entra_tenants"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(128))
+    tenant_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    domain: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    secrets: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(String(24), default="pending", server_default="pending")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EntraGroup(Base):
+    __tablename__ = "entra_groups"
+    __table_args__ = (UniqueConstraint("tenant_id", "entra_id", name="uq_entra_groups_tenant_entra"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="CASCADE"), index=True
+    )
+    entra_id: Mapped[str] = mapped_column(String(64), index=True)
+    display_name: Mapped[str] = mapped_column(String(256), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    mail: Mapped[str] = mapped_column(String(320), default="")
+    mail_nickname: Mapped[str] = mapped_column(String(64), default="")
+    security_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    mail_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    members: Mapped[list["EntraMembership"]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class EntraMembership(Base):
+    __tablename__ = "entra_memberships"
+    __table_args__ = (UniqueConstraint("group_id", "entra_user_id", name="uq_entra_membership"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_groups.id", ondelete="CASCADE"), index=True
+    )
+    entra_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    group: Mapped[EntraGroup] = relationship(back_populates="members")
+
+
+class DirectorySyncRun(Base):
+    __tablename__ = "directory_sync_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    users_upserted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    groups_upserted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    memberships_upserted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    apps_upserted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    assignments_upserted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="SET NULL"), index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class EntraApplication(Base):
+    """Enterprise application (service principal), optionally linked to an in-tenant app registration."""
+
+    __tablename__ = "entra_applications"
+    __table_args__ = (UniqueConstraint("tenant_id", "service_principal_id", name="uq_entra_apps_tenant_sp"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="CASCADE"), index=True
+    )
+    service_principal_id: Mapped[str] = mapped_column(String(64), index=True)
+    app_id: Mapped[str] = mapped_column(String(64), index=True)
+    application_object_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    display_name: Mapped[str] = mapped_column(String(256), index=True)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    publisher_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    service_principal_type: Mapped[str] = mapped_column(String(32), default="Application", server_default="Application")
+    account_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    assignment_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    sign_in_audience: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    homepage: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    is_microsoft: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    has_app_registration: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    app_roles: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    assignments: Mapped[list["EntraAppAssignment"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+
+
+class EntraAppAssignment(Base):
+    __tablename__ = "entra_app_assignments"
+    __table_args__ = (
+        UniqueConstraint("service_principal_id", "principal_id", "app_role_id", name="uq_entra_app_assignment"),
+        Index("ix_entra_app_assignment_principal", "principal_id", "principal_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    application_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_applications.id", ondelete="CASCADE"), index=True
+    )
+    assignment_id: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    service_principal_id: Mapped[str] = mapped_column(String(64), index=True)
+    app_role_id: Mapped[str] = mapped_column(String(64), default="00000000-0000-0000-0000-000000000000")
+    app_role_name: Mapped[str] = mapped_column(String(256), default="Default access")
+    principal_id: Mapped[str] = mapped_column(String(64), index=True)
+    principal_type: Mapped[str] = mapped_column(String(32), index=True)
+    principal_display_name: Mapped[str] = mapped_column(String(256), default="")
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    group_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_groups.id", ondelete="SET NULL")
+    )
+
+    application: Mapped[EntraApplication] = relationship(back_populates="assignments")
+
+
+class EntraLicenseSku(Base):
+    __tablename__ = "entra_license_skus"
+    __table_args__ = (UniqueConstraint("tenant_id", "sku_id", name="uq_entra_license_sku"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="CASCADE"), index=True
+    )
+    sku_id: Mapped[str] = mapped_column(String(64), index=True)
+    sku_part_number: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    consumed_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    enabled_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    suspended_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    warning_units: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    capability_status: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    service_plans: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class EntraUserTemplate(Base):
+    __tablename__ = "entra_user_templates"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_entra_template_tenant_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    department: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    job_title: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    usage_location: Mapped[str] = mapped_column(String(8), default="", server_default="")
+    group_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    license_sku_ids: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EntraAuditEvent(Base):
+    __tablename__ = "entra_audit_events"
+    __table_args__ = (Index("ix_entra_audit_tenant_created", "tenant_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entra_tenants.id", ondelete="SET NULL"), index=True
+    )
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    actor_email: Mapped[str] = mapped_column(String(320), default="", server_default="")
+    actor_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    target_id: Mapped[str] = mapped_column(String(320), default="", server_default="")
+    target_label: Mapped[str] = mapped_column(String(320), default="", server_default="")
+    before: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    after: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    graph_request_id: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="ok", server_default="ok")
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class Connection(Base):

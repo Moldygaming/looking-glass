@@ -128,6 +128,8 @@ class CostQuery(BaseModel):
     tag_value: str | None = None
     q: str | None = None
     keys: list[str] | None = None
+    focus: list[str] = Field(default_factory=list)
+    path: list[str] = Field(default_factory=list)
     granularity: str = "day"
     limit: int = 100
     offset: int = 0
@@ -215,6 +217,61 @@ class HierarchyNode(BaseModel):
     children: list["HierarchyNode"] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class CostObjectOut(BaseModel):
+    key: str
+    kind: str
+    label: str
+    provider: str = ""
+    path: str = ""
+    cost: float
+    prior_cost: float
+    delta_pct: float | None
+    share: float = 0
+    currency: str
+    service: str = ""
+    category: str = ""
+    has_children: bool = False
+
+
+class CostObjectFocus(BaseModel):
+    key: str
+    kind: str
+    label: str
+
+
+class CostObjectPage(BaseModel):
+    path: list[str]
+    current_kind: str | None = None
+    next_kind: str | None = None
+    focus: list[CostObjectFocus] = Field(default_factory=list)
+    objects: list[CostObjectOut] = Field(default_factory=list)
+    currency: str = "GBP"
+    period_cost: float = 0
+    prior_period_cost: float = 0
+    delta_pct: float | None = None
+    object_count: int = 0
+
+
+class DimensionOut(BaseModel):
+    key: str
+    label: str
+    group: str
+    description: str
+
+
+class HierarchyPresetOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    path: list[str]
+
+
+class DimensionCatalogOut(BaseModel):
+    dimensions: list[DimensionOut]
+    presets: list[HierarchyPresetOut]
+    default_path: list[str]
 
 
 class SeriesPoint(BaseModel):
@@ -419,5 +476,302 @@ class AdminOverview(BaseModel):
     recent_logins: list[RecentLoginOut] = Field(default_factory=list)
 
 
+class DirectorySyncOut(BaseModel):
+    id: UUID
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    users_upserted: int
+    groups_upserted: int
+    memberships_upserted: int
+    apps_upserted: int = 0
+    assignments_upserted: int = 0
+    tenant_id: UUID | None = None
+    error: str | None = None
+
+
+class EntraTenantOut(BaseModel):
+    id: UUID
+    name: str
+    tenant_id: str
+    client_id: str
+    domain: str = ""
+    status: str
+    enabled: bool = True
+    credentials_configured: bool
+    last_error: str | None = None
+    last_synced_at: datetime | None = None
+    last_sync: DirectorySyncOut | None = None
+    created_at: datetime
+
+
+class EntraTenantCreate(BaseModel):
+    name: str
+    tenant_id: str
+    client_id: str
+    client_secret: str
+    domain: str = ""
+
+
+class EntraTenantPatch(BaseModel):
+    name: str | None = None
+    tenant_id: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    domain: str | None = None
+    enabled: bool | None = None
+
+
+class EntraStatusOut(BaseModel):
+    configured: bool
+    tenant_count: int = 0
+    last_sync: DirectorySyncOut | None = None
+    required_permissions: list[str] = Field(default_factory=list)
+    tenants: list[EntraTenantOut] = Field(default_factory=list)
+
+
+class EntraAppRoleOut(BaseModel):
+    id: str
+    display_name: str
+    value: str = ""
+    description: str = ""
+    enabled: bool = True
+    allowed_member_types: list[str] = Field(default_factory=list)
+
+
+class EntraAppAssignmentRef(BaseModel):
+    application_id: UUID
+    display_name: str
+    app_id: str
+    app_role_id: str
+    app_role_name: str
+    assignment_required: bool = False
+    is_microsoft: bool = False
+    has_app_registration: bool = False
+
+
+class AssignedLicenseOut(BaseModel):
+    sku_id: str
+    sku_part_number: str = ""
+    display_name: str = ""
+    disabled_plans: list[str] = Field(default_factory=list)
+
+
+class EntraUserOut(BaseModel):
+    id: UUID
+    entra_oid: str
+    email: str
+    display_name: str
+    user_principal_name: str = ""
+    job_title: str = ""
+    department: str = ""
+    usage_location: str = ""
+    status: str
+    source: str = "local"
+    entra_tenant_id: UUID | None = None
+    last_synced_at: datetime | None = None
+    last_login_at: datetime | None = None
+    temporary_password: str | None = None
+    assigned_licenses: list[AssignedLicenseOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    app_assignments: list[EntraAppAssignmentRef] = Field(default_factory=list)
+
+
+class EntraUserCreate(BaseModel):
+    tenant_id: UUID
+    display_name: str
+    user_principal_name: str
+    password: str | None = None
+    job_title: str = ""
+    department: str = ""
+    usage_location: str = ""
+    template_id: UUID | None = None
+
+
+class EntraUserPatch(BaseModel):
+    display_name: str | None = None
+    job_title: str | None = None
+    department: str | None = None
+    usage_location: str | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class PasswordResetIn(BaseModel):
+    password: str | None = None
+    force_change: bool = True
+
+
+class LicenseChangeIn(BaseModel):
+    add_sku_ids: list[str] = Field(default_factory=list)
+    remove_sku_ids: list[str] = Field(default_factory=list)
+    usage_location: str | None = None
+
+
+class EntraLicenseOut(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    sku_id: str
+    sku_part_number: str = ""
+    display_name: str = ""
+    consumed_units: int = 0
+    enabled_units: int = 0
+    suspended_units: int = 0
+    warning_units: int = 0
+    available_units: int = 0
+    capability_status: str = ""
+    service_plans: list[str] = Field(default_factory=list)
+
+
+class EntraTemplateOut(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    name: str
+    description: str = ""
+    department: str = ""
+    job_title: str = ""
+    usage_location: str = ""
+    group_ids: list[str] = Field(default_factory=list)
+    license_sku_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class EntraTemplateIn(BaseModel):
+    tenant_id: UUID
+    name: str
+    description: str = ""
+    department: str = ""
+    job_title: str = ""
+    usage_location: str = ""
+    group_ids: list[str] = Field(default_factory=list)
+    license_sku_ids: list[str] = Field(default_factory=list)
+
+
+class EntraTemplatePatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    department: str | None = None
+    job_title: str | None = None
+    usage_location: str | None = None
+    group_ids: list[str] | None = None
+    license_sku_ids: list[str] | None = None
+
+
+class EntraBulkIn(BaseModel):
+    tenant_id: UUID
+    csv: str
+
+
+class EntraBulkRowOut(BaseModel):
+    row: int
+    action: str
+    user_principal_name: str
+    status: str
+    detail: str
+
+
+class EntraBulkOut(BaseModel):
+    ok: int
+    failed: int
+    results: list[EntraBulkRowOut]
+
+
+class EntraAuditOut(BaseModel):
+    id: UUID
+    tenant_id: UUID | None = None
+    actor_email: str = ""
+    actor_name: str = ""
+    action: str
+    target_type: str = ""
+    target_id: str = ""
+    target_label: str = ""
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    graph_request_id: str | None = None
+    status: str
+    error: str | None = None
+    created_at: datetime
+
+
+class EntraMemberOut(BaseModel):
+    entra_user_id: str
+    user_id: UUID | None = None
+    display_name: str | None = None
+    email: str | None = None
+    user_principal_name: str | None = None
+    status: str | None = None
+
+
+class EntraGroupOut(BaseModel):
+    id: UUID
+    tenant_id: UUID | None = None
+    entra_id: str
+    display_name: str
+    description: str = ""
+    mail: str = ""
+    mail_nickname: str = ""
+    security_enabled: bool = True
+    mail_enabled: bool = False
+    member_count: int = 0
+    last_synced_at: datetime | None = None
+    members: list[EntraMemberOut] = Field(default_factory=list)
+    app_assignments: list[EntraAppAssignmentRef] = Field(default_factory=list)
+
+
+class EntraAppAssignmentOut(BaseModel):
+    id: UUID
+    assignment_id: str
+    principal_id: str
+    principal_type: str
+    principal_display_name: str
+    app_role_id: str
+    app_role_name: str
+    user_id: UUID | None = None
+    group_id: UUID | None = None
+    email: str | None = None
+    user_principal_name: str | None = None
+    status: str | None = None
+
+
+class EntraAppOut(BaseModel):
+    id: UUID
+    tenant_id: UUID | None = None
+    service_principal_id: str
+    app_id: str
+    application_object_id: str = ""
+    display_name: str
+    description: str = ""
+    publisher_name: str = ""
+    account_enabled: bool = True
+    assignment_required: bool = False
+    sign_in_audience: str = ""
+    homepage: str = ""
+    is_microsoft: bool = False
+    hidden: bool = False
+    has_app_registration: bool = False
+    user_assignment_count: int = 0
+    group_assignment_count: int = 0
+    last_synced_at: datetime | None = None
+    app_roles: list[EntraAppRoleOut] = Field(default_factory=list)
+    assignments: list[EntraAppAssignmentOut] = Field(default_factory=list)
+
+
+class EntraGroupCreate(BaseModel):
+    tenant_id: UUID
+    display_name: str
+    description: str = ""
+
+
+class EntraGroupPatch(BaseModel):
+    display_name: str | None = None
+    description: str | None = None
+
+
+class EntraMemberIn(BaseModel):
+    entra_user_id: str | None = None
+    user_id: UUID | None = None
+
+
 CurrentUser.model_rebuild()
 HierarchyNode.model_rebuild()
+EntraStatusOut.model_rebuild()

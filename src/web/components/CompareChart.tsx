@@ -24,7 +24,7 @@ export function CompareChart({
   });
 
   if (!series.length) {
-    return <p className="py-10 text-center text-sm text-mist-500">Select resources to chart growth over time.</p>;
+    return <p className="py-10 text-center text-sm text-mist-500">Tick cost objects below to chart them over time.</p>;
   }
 
   return (

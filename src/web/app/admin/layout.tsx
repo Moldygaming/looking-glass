@@ -12,6 +12,7 @@ const tabs = [
   { href: "/admin/groups", label: "Groups", anyOf: ["admin.groups.read"] },
   { href: "/admin/roles", label: "Roles", anyOf: ["admin.roles.read", "admin.groups.read", "admin.users.read"] },
   { href: "/admin/privileges", label: "Permissions", anyOf: ["admin.users.read", "admin.groups.read", "admin.roles.read"] },
+  { href: "/admin/entra", label: "Entra config", anyOf: ["admin.entra.read"] },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -42,11 +43,12 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   return (
     <Shell>
       <p className="text-xs uppercase tracking-[0.18em] text-mist-500">Admin</p>
-      <h1 className="font-display text-3xl">Directory &amp; access</h1>
+      <h1 className="font-display text-3xl">Access</h1>
       <p className="mt-2 max-w-2xl text-sm text-mist-400">
         Create <span className="text-mist-100">roles</span> by ticking permissions, assign those roles to{" "}
         <span className="text-mist-100">groups</span> (or people), and use{" "}
-        <span className="text-mist-100">data scopes</span> to limit which cloud resources they can see.
+        <span className="text-mist-100">data scopes</span> to limit which cloud resources they can see. Graph
+        connection for the tenant is on <span className="text-mist-100">Entra config</span>.
       </p>
       <nav className="mt-6 flex flex-wrap gap-2">
         {visible.map((tab) => {

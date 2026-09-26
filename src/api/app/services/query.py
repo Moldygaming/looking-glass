@@ -7,6 +7,7 @@ from sqlalchemy.sql import ColumnElement
 from app.acl import cost_acl
 from app.models import CostLineItem
 from app.schemas import CostQuery, CurrentUser
+from app.services.objects import dimension_expr, dimension_filter, dimension_label_expr, parse_focus, parse_object_key
 
 
 def normalize_granularity(value: str | None) -> str:
@@ -70,46 +71,22 @@ def apply_cost_filters(stmt: Select, user: CurrentUser, q: CostQuery) -> Select:
             | CostLineItem.resource_id.ilike(like)
         )
     if q.keys:
-        stmt = stmt.where(group_expr(q.group_by).in_(q.keys))
+        values = []
+        for raw in q.keys:
+            kind, value = parse_object_key(raw)
+            values.append(value if kind else raw)
+        stmt = stmt.where(group_expr(q.group_by).in_(values))
+    for kind, value in parse_focus(q.focus):
+        stmt = stmt.where(dimension_filter(kind, value))
     return stmt
 
 
 def group_expr(group_by: str):
-    mapping = {
-        "provider": CostLineItem.provider,
-        "connection": CostLineItem.connection_id,
-        "account": CostLineItem.account_id,
-        "subscription": CostLineItem.account_id,
-        "project": CostLineItem.account_id,
-        "management_group": CostLineItem.org_id,
-        "resource_group": func.concat(CostLineItem.account_id, "/", CostLineItem.resource_group),
-        "service": CostLineItem.service,
-        "category": CostLineItem.category,
-        "region": CostLineItem.region,
-        "resource": CostLineItem.resource_id,
-        "resource_name": CostLineItem.resource_name,
-        "meter": CostLineItem.meter,
-        "resource_type": CostLineItem.resource_type,
-    }
-    if group_by.startswith("tag:"):
-        key = group_by.split(":", 1)[1]
-        return CostLineItem.tags[key].astext
-    return mapping.get(group_by, CostLineItem.service)
+    return dimension_expr(group_by or "service")
 
 
 def label_expr(group_by: str):
-    labels = {
-        "resource": CostLineItem.resource_name,
-        "account": CostLineItem.account_name,
-        "subscription": CostLineItem.account_name,
-        "project": CostLineItem.account_name,
-        "management_group": func.nullif(CostLineItem.org_name, ""),
-        "resource_group": func.nullif(CostLineItem.resource_group, ""),
-        "connection": CostLineItem.provider,
-    }
-    if group_by in labels and labels[group_by] is not None:
-        return func.coalesce(labels[group_by], group_expr(group_by))
-    return group_expr(group_by)
+    return dimension_label_expr(group_by or "service")
 
 
 async def sum_cost(session: AsyncSession, stmt: Select) -> float:

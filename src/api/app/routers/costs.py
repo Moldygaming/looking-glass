@@ -11,17 +11,36 @@ from app.db import get_session
 from app.models import Connection, CostLineItem, Recommendation
 from app.schemas import (
     BreakdownRow,
+    CostObjectFocus,
+    CostObjectOut,
+    CostObjectPage,
     CostPoint,
     CostQuery,
     CostSummary,
     CurrentUser,
+    DimensionCatalogOut,
+    DimensionOut,
     HierarchyNode,
+    HierarchyPresetOut,
     LineItemOut,
     NamedSeries,
     RollupRow,
     SeriesPoint,
 )
-from app.services.hierarchy import KIND_LABELS, build_tree, classify_category, parse_node_key
+from app.services.hierarchy import build_tree, classify_category
+from app.services.objects import (
+    DEFAULT_PATH,
+    PRESETS,
+    dimension_payload,
+    display_label,
+    kind_label,
+    next_kind,
+    normalize_path,
+    object_category,
+    object_key,
+    parse_focus,
+    parse_object_key,
+)
 from app.services.query import (
     apply_cost_filters,
     bucket_expr,
@@ -53,6 +72,8 @@ def _query(
     tag_value=None,
     q=None,
     keys=None,
+    focus=None,
+    path=None,
     granularity="day",
     limit=100,
     offset=0,
@@ -64,6 +85,12 @@ def _query(
         key_list = [part.strip() for part in keys.split(",") if part.strip()]
     elif keys:
         key_list = list(keys)
+    if isinstance(focus, str):
+        focus_list = [part.strip() for part in focus.split("|") if part.strip()]
+    elif focus:
+        focus_list = list(focus)
+    else:
+        focus_list = []
     return CostQuery(
         from_date=start,
         to_date=end,
@@ -77,6 +104,8 @@ def _query(
         tag_value=tag_value,
         q=q,
         keys=key_list,
+        focus=focus_list,
+        path=normalize_path(path),
         granularity=grain,
         limit=limit,
         offset=offset,
@@ -93,8 +122,9 @@ async def summary(
     connection_id=None,
     tag_key: str | None = None,
     tag_value: str | None = None,
+    focus: str | None = None,
 ):
-    q = _query(from_date, to_date, provider, connection_id, tag_key=tag_key, tag_value=tag_value)
+    q = _query(from_date, to_date, provider, connection_id, tag_key=tag_key, tag_value=tag_value, focus=focus)
     start, end = period(q.from_date, q.to_date)
     length = (end - start).days + 1
     prior_end = start - timedelta(days=1)
@@ -227,6 +257,8 @@ async def breakdown(
     group_by: str = Query(default="service"),
     tag_key: str | None = None,
     tag_value: str | None = None,
+    focus: str | None = None,
+    q: str | None = None,
     limit: int = 12,
 ):
     q = _query(
@@ -237,6 +269,8 @@ async def breakdown(
         group_by=group_by,
         tag_key=tag_key,
         tag_value=tag_value,
+        q=q,
+        focus=focus,
         limit=limit,
     )
     key = group_expr(group_by)
@@ -325,6 +359,8 @@ async def tree(
     tag_key: str | None = None,
     tag_value: str | None = None,
     q: str | None = None,
+    focus: str | None = None,
+    path: str | None = None,
 ):
     grain = normalize_granularity(granularity)
     query = _query(
@@ -336,6 +372,8 @@ async def tree(
         tag_key=tag_key,
         tag_value=tag_value,
         q=q,
+        focus=focus,
+        path=path,
         granularity=grain,
         limit=500,
     )
@@ -365,6 +403,7 @@ async def compare(
     tag_value: str | None = None,
     q: str | None = None,
     keys: str | None = None,
+    focus: str | None = None,
     limit: int = 8,
 ):
     grain = normalize_granularity(granularity)
@@ -373,7 +412,7 @@ async def compare(
         raw = raw.strip()
         if not raw:
             continue
-        kind, value = parse_node_key(raw)
+        kind, value = parse_object_key(raw)
         parsed.append((kind or group_by, value, raw))
     if parsed and len({item[0] for item in parsed}) > 1:
         series: list[NamedSeries] = []
@@ -391,6 +430,7 @@ async def compare(
                     tag_value=tag_value,
                     q=q,
                     keys=value,
+                    focus=focus,
                     granularity=grain,
                     limit=limit,
                 ),
@@ -400,7 +440,7 @@ async def compare(
                 item.key = raw
                 item.kind = kind
                 item.category = item.category or classify_category(item.label)
-                item.label = f"{KIND_LABELS.get(kind, kind)} · {item.label}"
+                item.label = f"{kind_label(kind)} · {item.label}"
             series.extend(part)
         return series[:8]
     if parsed:
@@ -416,6 +456,7 @@ async def compare(
         tag_value=tag_value,
         q=q,
         keys=keys,
+        focus=focus,
         granularity=grain,
         limit=limit,
     )
@@ -439,6 +480,7 @@ async def line_items(
     tag_key: str | None = None,
     tag_value: str | None = None,
     q: str | None = None,
+    focus: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ):
@@ -453,6 +495,7 @@ async def line_items(
         tag_key=tag_key,
         tag_value=tag_value,
         q=q,
+        focus=focus,
         limit=limit,
         offset=offset,
     )
@@ -471,17 +514,130 @@ async def line_items(
     }
 
 
+@router.get("/dimensions", response_model=DimensionCatalogOut)
+async def list_dimensions(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+):
+    tags = await _tag_map(session, user)
+    return DimensionCatalogOut(
+        dimensions=[DimensionOut(**item) for item in dimension_payload(list(tags.keys()))],
+        presets=[HierarchyPresetOut(**item) for item in PRESETS],
+        default_path=list(DEFAULT_PATH),
+    )
+
+
+@router.get("/objects", response_model=CostObjectPage)
+async def list_objects(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+    from_date=None,
+    to_date=None,
+    provider: str | None = None,
+    connection_id=None,
+    path: str | None = None,
+    focus: str | None = None,
+    granularity: str = Query(default="day"),
+    tag_key: str | None = None,
+    tag_value: str | None = None,
+    q: str | None = None,
+    limit: int = 200,
+):
+    grain = normalize_granularity(granularity)
+    levels = normalize_path(path)
+    focus_pairs = parse_focus(focus)
+    child_kind = next_kind(levels, focus_pairs)
+    query = _query(
+        from_date,
+        to_date,
+        provider,
+        connection_id,
+        group_by=child_kind or "service",
+        tag_key=tag_key,
+        tag_value=tag_value,
+        q=q,
+        focus=focus,
+        path=levels,
+        granularity=grain,
+        limit=limit,
+    )
+    start, end = period(query.from_date, query.to_date)
+    length = (end - start).days + 1
+    prior_end = start - timedelta(days=1)
+    prior_start = prior_end - timedelta(days=length - 1)
+
+    current_rows = await _grouped_totals(session, user, query)
+    prior_query = query.model_copy(deep=True)
+    prior_query.from_date = prior_start
+    prior_query.to_date = prior_end
+    prior_rows = await _grouped_totals(session, user, prior_query)
+    prior_by_key = {row["key"]: row["cost"] for row in prior_rows}
+
+    names = await _connection_names(session) if child_kind == "connection" else {}
+    period_cost = sum(row["cost"] for row in current_rows)
+    prior_period = sum(prior_by_key.values())
+    following = next_kind(levels, focus_pairs + ([(child_kind, "")] if child_kind else []))
+    leaf = following is None or following == child_kind
+    objects: list[CostObjectOut] = []
+    for row in current_rows[: min(max(limit, 1), 400)]:
+        value = row["key"]
+        label = row["label"]
+        if child_kind == "connection":
+            label = names.get(value, label)
+        label = display_label(child_kind or "service", value, label)
+        prior_cost = float(prior_by_key.get(value, 0))
+        cost = float(row["cost"])
+        delta = None if prior_cost == 0 else round(((cost - prior_cost) / prior_cost) * 100, 1)
+        objects.append(
+            CostObjectOut(
+                key=object_key(child_kind or "service", value),
+                kind=child_kind or "service",
+                label=label,
+                provider=row["provider"],
+                path=" / ".join([*[item[1] or display_label(item[0], item[1]) for item in focus_pairs], label]),
+                cost=round(cost, 2),
+                prior_cost=round(prior_cost, 2),
+                delta_pct=delta,
+                share=round(cost / period_cost, 4) if period_cost else 0,
+                currency=row["currency"],
+                service=row["service"],
+                category=object_category(child_kind or "", row["service"], row["resource_type"]),
+                has_children=not leaf,
+            )
+        )
+
+    focus_out: list[CostObjectFocus] = []
+    for kind, value in focus_pairs:
+        focus_out.append(
+            CostObjectFocus(
+                key=object_key(kind, value),
+                kind=kind,
+                label=display_label(kind, value, names.get(value) if kind == "connection" else value),
+            )
+        )
+
+    delta_pct = None if prior_period == 0 else round(((period_cost - prior_period) / prior_period) * 100, 1)
+    currency = objects[0].currency if objects else "GBP"
+    return CostObjectPage(
+        path=levels,
+        current_kind=child_kind,
+        next_kind=None if leaf else following,
+        focus=focus_out,
+        objects=objects,
+        currency=currency,
+        period_cost=round(period_cost, 2),
+        prior_period_cost=round(prior_period, 2),
+        delta_pct=delta_pct,
+        object_count=len(objects),
+    )
+
+
 @router.get("/tags")
 async def tag_keys(
     session: AsyncSession = Depends(get_session),
     user: CurrentUser = Depends(get_current_user),
 ):
-    stmt = apply_cost_filters(select(CostLineItem.tags), user, _query())
-    tags: dict[str, set[str]] = {}
-    for (blob,) in (await session.execute(stmt.limit(4000))).all():
-        for key, value in (blob or {}).items():
-            tags.setdefault(key, set()).add(str(value))
-    return {key: sorted(values) for key, values in sorted(tags.items())}
+    return await _tag_map(session, user)
 
 
 async def _compare_series(
@@ -588,6 +744,57 @@ async def _bucket_rows(
             )
             previous_cost = cost
     return result
+
+
+async def _grouped_totals(session: AsyncSession, user: CurrentUser, query: CostQuery) -> list[dict]:
+    kind = query.group_by or "service"
+    key = group_expr(kind)
+    label = label_expr(kind)
+    stmt = (
+        apply_cost_filters(
+            select(
+                key.label("key"),
+                label.label("label"),
+                func.min(CostLineItem.provider).label("provider"),
+                func.min(CostLineItem.service).label("service"),
+                func.min(CostLineItem.resource_type).label("resource_type"),
+                func.min(CostLineItem.currency).label("currency"),
+                func.sum(CostLineItem.cost).label("cost"),
+            ),
+            user,
+            query,
+        )
+        .group_by(key, label)
+        .order_by(func.sum(CostLineItem.cost).desc())
+        .limit(400)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        {
+            "key": str(row.key or ""),
+            "label": str(row.label or row.key or ""),
+            "provider": str(row.provider or ""),
+            "service": str(row.service or ""),
+            "resource_type": str(row.resource_type or ""),
+            "currency": str(row.currency or "GBP"),
+            "cost": float(row.cost or 0),
+        }
+        for row in rows
+    ]
+
+
+async def _connection_names(session: AsyncSession) -> dict[str, str]:
+    rows = (await session.execute(select(Connection.id, Connection.name))).all()
+    return {str(row.id): row.name for row in rows}
+
+
+async def _tag_map(session: AsyncSession, user: CurrentUser) -> dict[str, list[str]]:
+    stmt = apply_cost_filters(select(CostLineItem.tags), user, _query())
+    tags: dict[str, set[str]] = {}
+    for (blob,) in (await session.execute(stmt.limit(4000))).all():
+        for key, value in (blob or {}).items():
+            tags.setdefault(key, set()).add(str(value))
+    return {key: sorted(values) for key, values in sorted(tags.items())}
 
 
 def _shares(rows, total: float, key_attr: str) -> list[BreakdownRow]:

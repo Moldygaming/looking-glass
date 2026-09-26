@@ -53,6 +53,24 @@ CATALOG: tuple[Privilege, ...] = (
         "Create roles and choose their permissions.",
     ),
     Privilege(
+        "admin.entra.read",
+        "Infrastructure",
+        "View Entra ID",
+        "Open the Entra directory, licenses, templates, and the directory audit log.",
+    ),
+    Privilege(
+        "admin.entra.helpdesk",
+        "Infrastructure",
+        "Entra help desk",
+        "Reset passwords, enable or disable accounts, and edit group membership. Cannot create or delete users or groups, assign licenses, or manage tenants.",
+    ),
+    Privilege(
+        "admin.entra.write",
+        "Infrastructure",
+        "Manage Entra ID",
+        "Create and edit Entra users and groups, assign licenses, run bulk changes, and sync the directory.",
+    ),
+    Privilege(
         "connections.read",
         "Infrastructure",
         "View connections",

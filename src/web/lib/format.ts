@@ -35,16 +35,24 @@ export function periodLabel(iso: string, granularity: string) {
 }
 
 export function kindLabel(kind: string) {
+  if (kind.startsWith("tag:")) return `Tag · ${kind.slice(4)}`;
   const labels: Record<string, string> = {
-    management_group: "Management group",
-    subscription: "Subscription",
-    account: "AWS account",
-    project: "GCP project",
-    resource_group: "Resource group",
-    resource: "Resource",
+    provider: "Cloud",
     connection: "Connection",
+    org: "Organisation",
+    management_group: "Organisation",
+    account: "Account",
+    subscription: "Account",
+    project: "Account",
+    resource_group: "Resource group",
+    region: "Region",
+    category: "Category",
+    service: "Service",
+    resource_type: "Resource type",
+    meter: "Meter",
+    resource: "Resource",
   };
-  return labels[kind] || kind;
+  return labels[kind] || kind.replaceAll("_", " ");
 }
 
 export function grainNoun(granularity: string, plural = false) {

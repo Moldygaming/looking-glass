@@ -6,6 +6,7 @@ import { signOut, useSession } from "next-auth/react";
 import {
   Cloud,
   Gauge,
+  IdCard,
   LayoutDashboard,
   LogOut,
   Plug,
@@ -16,10 +17,15 @@ import { Logo } from "./Logo";
 import { useMe } from "./MeProvider";
 import { canAccessAdmin, hasPrivilege } from "@/lib/iam";
 
-const sections: {
-  label: string | null;
-  items: { href: string; label: string; icon: typeof Gauge; anyOf: string[] }[];
-}[] = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof Gauge;
+  anyOf?: string[];
+  admin?: boolean;
+};
+
+const sections: { label: string | null; items: NavItem[] }[] = [
   {
     label: null,
     items: [{ href: "/", label: "Overview", icon: Gauge, anyOf: ["finops.costs.read"] }],
@@ -34,7 +40,11 @@ const sections: {
   },
   {
     label: "Infrastructure",
-    items: [{ href: "/connections", label: "Connections", icon: Plug, anyOf: ["connections.read"] }],
+    items: [
+      { href: "/connections", label: "Connections", icon: Plug, anyOf: ["connections.read"] },
+      { href: "/entra", label: "Entra", icon: IdCard, anyOf: ["admin.entra.read", "admin.entra.helpdesk"] },
+      { href: "/admin", label: "Admin", icon: Shield, admin: true },
+    ],
   },
 ];
 
@@ -45,9 +55,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const sessionAdmin = data?.user?.roles?.includes("platform_admin");
   const showAdmin = loading ? sessionAdmin : canAccessAdmin(me);
 
-  function visible(anyOf: string[]) {
+  function visible(item: NavItem) {
+    if (item.admin) return loading && !me ? Boolean(sessionAdmin) : showAdmin;
     if (loading && !me) return true;
-    return hasPrivilege(me, ...anyOf);
+    return hasPrivilege(me, ...(item.anyOf || []));
   }
 
   return (
@@ -62,7 +73,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-col lg:overflow-visible">
           {sections.map((section) => {
-            const items = section.items.filter((item) => visible(item.anyOf));
+            const items = section.items.filter((item) => visible(item));
             if (!items.length) return null;
             return (
               <div key={section.label || "root"} className="contents lg:block">
@@ -90,19 +101,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
               </div>
             );
           })}
-          {showAdmin && (
-            <Link
-              href="/admin"
-              className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm ${
-                path.startsWith("/admin")
-                  ? "bg-glass/10 text-glass"
-                  : "text-mist-400 hover:bg-white/5 hover:text-mist-100"
-              }`}
-            >
-              <Shield size={16} />
-              Admin
-            </Link>
-          )}
         </nav>
         <div className="hidden border-t border-white/10 p-4 lg:block">
           <div className="text-sm font-medium">{data?.user?.name}</div>
