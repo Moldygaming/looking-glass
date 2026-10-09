@@ -16,11 +16,15 @@ class Settings(BaseSettings):
     blob_key: str = ""
     blob_container: str = "cost-exports"
     entra_admin_role: str = "PlatformAdmin"
+    entra_admin_group_id: str = ""
+    entra_access_group_id: str = ""
     entra_tenant_id: str = ""
     entra_client_id: str = ""
     entra_client_secret: str = ""
     entra_sync_interval_seconds: int = 3600
-    auth_allow_demo: bool = True
+    break_glass_username: str = "infraadmin"
+    break_glass_password: str = "admin123+"
+    auth_allow_demo: bool = False
     seed_on_startup: bool = True
 
     @property

@@ -10,31 +10,37 @@ Admins connect multiple cloud instances (several Azure tenants, AWS payers, GCP 
 docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and pick a demo persona:
-
-| Persona | Sees |
-|---------|------|
-| Avery Chen (admin) | Everything, plus the admin portal |
-| Sam Okonkwo (infra) | Cost tagged `team=infra` |
-| Priya Shah (project) | Cost tagged `project=alpha` |
+Open [http://localhost:3000](http://localhost:3000) and sign in with Microsoft Entra ID, or the local break-glass account (`infraadmin` / `admin123+` unless `BREAK_GLASS_USERNAME` / `BREAK_GLASS_PASSWORD` are set).
 
 Seed data is 90 days of multi-cloud spend across two Azure tenants, an AWS payer and a GCP org.
+
+## Access model
+
+1. Users authenticate with **Microsoft Entra ID**.
+2. Members of the Entra group in `ENTRA_ADMIN_GROUP_ID` (or the `PlatformAdmin` app role) become platform admins and can enter the product.
+3. Everyone else is admitted only after a platform admin assigns a role or access group in **Admin → Users / Access groups**. Tag scopes on those groups control which cost they see.
+4. There is **one** local account, for break-glass only. It is never an Entra user.
 
 ## Entra ID SSO
 
 1. Register a web app in Microsoft Entra ID.
 2. Redirect URI: `http://localhost:3000/api/auth/callback/microsoft-entra-id` (and the production HTTPS equivalent).
 3. Create a client secret.
-4. Optional app role: `PlatformAdmin` (value must match `ENTRA_ADMIN_ROLE`).
-5. Optional group claims so Entra groups can be mapped in **Admin portal → Access groups**.
-6. Set:
+4. Token configuration → optional claims → **groups**: security groups, emit as **Group ID**.
+5. Put that admin group's object ID in `ENTRA_ADMIN_GROUP_ID`.
+6. Optional app role: `PlatformAdmin` (value must match `ENTRA_ADMIN_ROLE`).
+7. Set:
 
 ```bash
 AUTH_MICROSOFT_ENTRA_ID_ID=<application (client) id>
 AUTH_MICROSOFT_ENTRA_ID_SECRET=<client secret>
 AUTH_MICROSOFT_ENTRA_ID_TENANT_ID=<directory (tenant) id>
-AUTH_ALLOW_DEMO=false   # production
+ENTRA_ADMIN_GROUP_ID=<entra security group object id>
+BREAK_GLASS_USERNAME=infraadmin          # default
+BREAK_GLASS_PASSWORD=admin123+           # default; change in production
 ```
+
+If a user has too many group memberships for the token (overage), Looking Glass calls Microsoft Graph `checkMemberGroups` for the configured admin/access group IDs. Grant admin consent for `GroupMember.Read.All` if you rely on that fallback.
 
 ## What you will need on Azure (hosting deferred)
 
@@ -61,6 +67,16 @@ Each **connection** is one cloud organisation:
 
 Until credentials are attached, Looking Glass keeps the seeded demo costs so you can build dashboards and access groups immediately.
 
+## Azure DevOps health
+
+Connect an Azure DevOps organisation (name + personal access token) from **Connections**, then open **DevOps health**.
+
+1. Load projects from the organisation and tick the ones to monitor.
+2. Run a health check.
+3. The report lists repositories with active pull requests, repositories with stale branches (default: no commit in 30 days), and alerts for pipelines that fail consecutively or at a high recent failure rate.
+
+The PAT needs **Code (Read)**, **Build (Read)** and **Project and team (Read)**. A seeded Contoso snapshot is loaded so the dashboard is visible before a live org is connected.
+
 ## Tag-based access
 
 1. Open **Admin portal → Access groups**.
@@ -73,7 +89,7 @@ Cost queries, line items, dashboards and recommendations are fail-closed: no mat
 ## Layout
 
 ```
-src/web       Next.js UI (Entra / demo login, dashboards, admin)
-src/api       FastAPI (authorisation, costs, connectors)
-src/api/app/worker.py   Ingest + recommendation loop
+src/web       Next.js UI (Entra SSO + break-glass login, dashboards, admin, DevOps health)
+src/api       FastAPI (authorisation, costs, connectors, Azure DevOps health)
+src/api/app/worker.py   Ingest + recommendation + DevOps health loop
 ```

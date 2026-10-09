@@ -7,9 +7,9 @@ from sqlalchemy import select, text
 from app.config import settings
 from app.db import Base, engine, SessionLocal
 from app.models import Connection, CostLineItem
-from app.routers import admin, connections, costs, dashboards, entra, entra_ops, me, recommendations
+from app.routers import admin, connections, costs, dashboards, devops, entra, entra_ops, me, recommendations, session as session_router
 from app.entra.sync import ensure_env_tenant
-from app.seed import ensure_iam, seed_if_empty
+from app.seed import ensure_devops_demo, ensure_iam, seed_if_empty
 from app.services.hierarchy import enrich_line
 
 
@@ -47,6 +47,8 @@ async def lifespan(_: FastAPI):
     async with SessionLocal() as session:
         await ensure_iam(session)
     async with SessionLocal() as session:
+        await ensure_devops_demo(session)
+    async with SessionLocal() as session:
         await ensure_env_tenant(session)
     async with SessionLocal() as session:
         connections = {row.id: row for row in (await session.execute(select(Connection))).scalars()}
@@ -67,10 +69,12 @@ app.add_middleware(
 )
 
 app.include_router(me.router)
+app.include_router(session_router.router)
 app.include_router(costs.router)
 app.include_router(dashboards.router)
 app.include_router(recommendations.router)
 app.include_router(connections.router)
+app.include_router(devops.router)
 app.include_router(admin.router)
 app.include_router(entra.router)
 app.include_router(entra_ops.router)

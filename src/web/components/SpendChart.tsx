@@ -1,38 +1,60 @@
 "use client";
 
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { useId } from "react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { ChartTooltip } from "@/components/ChartTooltip";
 import type { CostPoint } from "@/lib/types";
-import { money } from "@/lib/format";
+import { chartPeriodLabel, moneyAxis, tickStep } from "@/lib/format";
 
-export function SpendChart({ series, currency }: { series: CostPoint[]; currency: string }) {
-  const data = series.map((p) => ({
-    ...p,
-    label: p.date.slice(5),
+export function SpendChart({
+  series,
+  currency,
+  granularity = "day",
+}: {
+  series: CostPoint[];
+  currency: string;
+  granularity?: string;
+}) {
+  const gradientId = useId().replace(/:/g, "");
+  const data = series.map((point) => ({
+    ...point,
+    label: chartPeriodLabel(point.date, granularity),
   }));
+  if (!data.length) {
+    return <p className="py-16 text-center text-sm text-mist-500">No spend in this period.</p>;
+  }
   return (
-    <div className="h-64 w-full">
-      <ResponsiveContainer>
-        <AreaChart data={data} margin={{ left: 8, right: 8, top: 8, bottom: 0 }}>
+    <div className="h-80 w-full min-w-0">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={data} margin={{ top: 12, right: 8, left: 4, bottom: 4 }}>
           <defs>
-            <linearGradient id="spend" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2ee6c7" stopOpacity={0.35} />
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#2ee6c7" stopOpacity={0.28} />
               <stop offset="100%" stopColor="#2ee6c7" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <XAxis dataKey="label" tick={{ fill: "#8b9bb4", fontSize: 11 }} axisLine={false} tickLine={false} />
+          <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
+          <XAxis
+            dataKey="label"
+            interval={tickStep(data.length)}
+            minTickGap={22}
+            tick={{ fill: "#8b9bb4", fontSize: 11 }}
+            tickMargin={8}
+            axisLine={false}
+            tickLine={false}
+          />
           <YAxis
             tick={{ fill: "#8b9bb4", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
-            tickFormatter={(v) => money(Number(v), currency)}
-            width={72}
+            width={52}
+            tickFormatter={(value) => moneyAxis(Number(value), currency)}
           />
           <Tooltip
-            contentStyle={{ background: "#121a2c", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12 }}
-            formatter={(v) => money(Number(v), currency)}
-            labelStyle={{ color: "#8b9bb4" }}
+            cursor={{ stroke: "rgba(46,230,199,0.35)", strokeWidth: 1 }}
+            content={<ChartTooltip currency={currency} />}
           />
-          <Area type="monotone" dataKey="cost" stroke="#2ee6c7" fill="url(#spend)" strokeWidth={2} />
+          <Area type="monotone" dataKey="cost" name="Cost" stroke="#2ee6c7" fill={`url(#${gradientId})`} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
         </AreaChart>
       </ResponsiveContainer>
     </div>

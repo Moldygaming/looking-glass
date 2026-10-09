@@ -71,7 +71,7 @@ export default function OverviewPage() {
           <div className="mt-6 grid gap-4 xl:grid-cols-5">
             <section className="panel-pad xl:col-span-3">
               <h2 className="mb-4 text-sm font-medium text-mist-400">Daily cost</h2>
-              <SpendChart series={summary.series} currency={summary.currency} />
+              <SpendChart series={summary.series} currency={summary.currency} granularity="day" />
             </section>
             <section className="panel-pad xl:col-span-2">
               <h2 className="mb-4 text-sm font-medium text-mist-400">By provider</h2>

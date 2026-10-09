@@ -19,8 +19,9 @@ from app.models import (
     User,
     UserRole,
 )
+from app.identity import BREAK_GLASS_OID, evaluate_sso, group_ids_match, role_match
 from app.privileges import PLATFORM_ADMIN_KEY, PLATFORM_ADMIN_ROLE_NAME
-from app.schemas import CurrentUser, GroupRef, RoleRef, ScopeOut
+from app.schemas import CurrentUser, GroupRef, RoleRef, ScopeOut, SsoIn, SsoOut
 
 
 async def get_current_user(
@@ -39,41 +40,44 @@ async def get_current_user(
 
     header_roles = [r.strip() for r in (x_user_roles or "").split(",") if r.strip()]
     header_groups = [g.strip() for g in (x_user_groups or "").split(",") if g.strip()]
-    header_admin = "platform_admin" in header_roles or settings.entra_admin_role in header_roles
+    header_admin = _is_entra_admin(header_roles, header_groups) or x_user_oid == BREAK_GLASS_OID
 
     user = (
         await session.execute(select(User).where(User.entra_oid == x_user_oid))
     ).scalar_one_or_none()
     if user is None and x_user_email:
-        user = (
+        candidate = (
             await session.execute(select(User).where(func.lower(User.email) == x_user_email.lower()))
         ).scalar_one_or_none()
-        if user:
-            user.entra_oid = x_user_oid
+        if candidate and (
+            candidate.entra_oid == BREAK_GLASS_OID or candidate.source == "local"
+        ) and x_user_oid != BREAK_GLASS_OID:
+            candidate = None
+        elif candidate and candidate.entra_oid != x_user_oid:
+            candidate.entra_oid = x_user_oid
+        user = candidate
 
     if user is None:
-        user = User(
-            entra_oid=x_user_oid,
-            email=x_user_email or f"{x_user_oid}@unknown",
-            display_name=x_user_name or x_user_email or x_user_oid,
-            roles=["platform_admin"] if header_admin else ["analyst"],
-            entra_group_ids=header_groups,
-            status="active",
-            last_login_at=datetime.now(UTC),
+        raise HTTPException(
+            status_code=403,
+            detail="This identity is not provisioned in Looking Glass. Sign in with Entra ID or the break-glass account.",
         )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-    else:
-        if (user.status or "active") == "disabled":
-            raise HTTPException(status_code=403, detail="This account has been disabled")
-        user.email = x_user_email or user.email
-        user.display_name = x_user_name or user.display_name
-        if header_admin and "platform_admin" not in (user.roles or []):
-            user.roles = list({*(user.roles or []), "platform_admin"})
-        user.entra_group_ids = header_groups or user.entra_group_ids
-        user.last_login_at = datetime.now(UTC)
-        await session.commit()
+    if user.entra_oid == BREAK_GLASS_OID and x_user_oid != BREAK_GLASS_OID:
+        raise HTTPException(
+            status_code=403,
+            detail="This identity is not provisioned in Looking Glass. Sign in with Entra ID or the break-glass account.",
+        )
+    if (user.status or "active") == "disabled":
+        raise HTTPException(status_code=403, detail="This account has been disabled")
+    if user.entra_oid != BREAK_GLASS_OID:
+        if x_user_email:
+            user.email = x_user_email
+        if x_user_name:
+            user.display_name = x_user_name
+        if header_groups:
+            user.entra_group_ids = header_groups
+    user.last_login_at = datetime.now(UTC)
+    await session.commit()
 
     if header_admin:
         await _ensure_in_platform_admins(session, user)
@@ -314,3 +318,121 @@ async def _ensure_in_platform_admins(session: AsyncSession, user: User) -> None:
 async def load_user_scopes(session: AsyncSession, user: User) -> tuple[list[ScopeOut], list[UUID]]:
     access = await load_user_access(session, user)
     return access.scopes, access.group_ids
+
+
+def _is_entra_admin(roles: list[str], groups: list[str]) -> bool:
+    return group_ids_match(settings.entra_admin_group_id, groups) or role_match(
+        settings.entra_admin_role, roles
+    )
+
+
+async def accept_sso(session: AsyncSession, body: SsoIn) -> SsoOut:
+    oid = (body.oid or "").strip()
+    if not oid:
+        raise HTTPException(status_code=400, detail="Missing Entra object ID")
+    if oid == BREAK_GLASS_OID:
+        raise HTTPException(status_code=400, detail="Invalid Entra object ID")
+    groups = [item.strip() for item in body.groups if item and item.strip()]
+    roles = [item.strip() for item in body.roles if item and item.strip()]
+    email = (body.email or "").strip()
+    name = (body.display_name or "").strip() or email or oid
+
+    user = (await session.execute(select(User).where(User.entra_oid == oid))).scalar_one_or_none()
+    if user is None and email:
+        user = (
+            await session.execute(select(User).where(func.lower(User.email) == email.lower()))
+        ).scalar_one_or_none()
+        if user and (user.entra_oid == BREAK_GLASS_OID or user.source == "local"):
+            user = None
+        elif user:
+            user.entra_oid = oid
+
+    if user is None:
+        user = User(
+            entra_oid=oid,
+            email=email or f"{oid}@unknown",
+            display_name=name,
+            roles=[],
+            entra_group_ids=groups,
+            status="active",
+            source="entra",
+            notes="",
+        )
+        session.add(user)
+        await session.flush()
+    else:
+        if email:
+            user.email = email
+        user.display_name = name or user.display_name
+        user.entra_group_ids = groups
+        if user.source != "entra":
+            user.source = "entra"
+
+    if (user.status or "active") == "disabled":
+        await session.commit()
+        raise HTTPException(status_code=403, detail="This account has been disabled.")
+
+    in_admin = _is_entra_admin(roles, groups)
+    in_access = group_ids_match(settings.entra_access_group_id, groups)
+    if in_admin:
+        await _ensure_in_platform_admins(session, user)
+    else:
+        await session.commit()
+
+    access = await load_user_access(session, user)
+    allowed, reason = evaluate_sso(
+        disabled=(user.status or "active") == "disabled",
+        in_admin_group=in_admin,
+        has_admin_app_role=role_match(settings.entra_admin_role, roles),
+        in_access_group=in_access,
+        access_group_configured=bool((settings.entra_access_group_id or "").strip()),
+        has_portal_access=bool(access.privileges or access.group_ids),
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail=reason)
+    user.last_login_at = datetime.now(UTC)
+    await session.commit()
+    is_admin = PLATFORM_ADMIN_KEY in access.privileges or in_admin
+    return SsoOut(ok=True, reason=reason, is_admin=is_admin, user_id=user.id)
+
+
+async def ensure_break_glass_user(session: AsyncSession) -> User:
+    username = (settings.break_glass_username or "infraadmin").strip() or "infraadmin"
+    email = f"{username}@lookingglass.local"
+    user = (await session.execute(select(User).where(User.entra_oid == BREAK_GLASS_OID))).scalar_one_or_none()
+    if user is None:
+        user = (
+            await session.execute(select(User).where(func.lower(User.email) == email.lower()))
+        ).scalar_one_or_none()
+    if user is None:
+        user = User(
+            entra_oid=BREAK_GLASS_OID,
+            email=email,
+            display_name="Infra Admin",
+            roles=["platform_admin"],
+            entra_group_ids=[],
+            status="active",
+            source="local",
+            notes="Break-glass local account. Sign in with the username and password from environment variables.",
+        )
+        session.add(user)
+        await session.flush()
+    else:
+        user.entra_oid = BREAK_GLASS_OID
+        user.email = email
+        user.display_name = user.display_name or "Infra Admin"
+        user.status = "active"
+        user.source = "local"
+        if "platform_admin" not in (user.roles or []):
+            user.roles = list({*(user.roles or []), "platform_admin"})
+        if not user.notes:
+            user.notes = "Break-glass local account."
+    await _ensure_in_platform_admins(session, user)
+    return user
+
+
+def require_internal_key(
+    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
+) -> None:
+    if not x_internal_key or x_internal_key != settings.internal_api_key:
+        raise HTTPException(status_code=401, detail="Missing or invalid internal key")

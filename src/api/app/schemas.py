@@ -39,6 +39,21 @@ class CurrentUser(BaseModel):
         return any(key in granted for key in keys)
 
 
+class SsoIn(BaseModel):
+    oid: str
+    email: str = ""
+    display_name: str = ""
+    groups: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+
+
+class SsoOut(BaseModel):
+    ok: bool
+    reason: str = ""
+    is_admin: bool = False
+    user_id: UUID | None = None
+
+
 class ScopeIn(BaseModel):
     tag_key: str
     tag_value: str
@@ -86,11 +101,12 @@ class ConnectionSecretsIn(BaseModel):
     access_key_id: str | None = None
     secret_access_key: str | None = None
     service_account_json: str | None = None
+    pat: str | None = None
 
 
 class ConnectionIn(BaseModel):
     name: str
-    provider: Literal["azure", "aws", "gcp"]
+    provider: Literal["azure", "aws", "gcp", "azure_devops"]
     config: dict[str, Any] = Field(default_factory=dict)
     secrets: ConnectionSecretsIn | None = None
     secret_ref: str | None = None
@@ -115,6 +131,11 @@ class ConnectionOut(BaseModel):
     created_at: datetime
 
 
+class TagFilter(BaseModel):
+    key: str
+    value: str
+
+
 class CostQuery(BaseModel):
     from_date: date | None = None
     to_date: date | None = None
@@ -122,10 +143,13 @@ class CostQuery(BaseModel):
     connection_id: UUID | None = None
     account_id: str | None = None
     service: str | None = None
+    resource_type: str | None = None
+    category: str | None = None
     region: str | None = None
     group_by: str = "service"
     tag_key: str | None = None
     tag_value: str | None = None
+    tag_filters: list[TagFilter] = Field(default_factory=list)
     q: str | None = None
     keys: list[str] | None = None
     focus: list[str] = Field(default_factory=list)
@@ -268,6 +292,19 @@ class HierarchyPresetOut(BaseModel):
     path: list[str]
 
 
+class FacetValue(BaseModel):
+    name: str
+    provider: str = ""
+    category: str = ""
+
+
+class CostFacetsOut(BaseModel):
+    providers: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
+    resource_types: list[FacetValue] = Field(default_factory=list)
+    services: list[FacetValue] = Field(default_factory=list)
+
+
 class DimensionCatalogOut(BaseModel):
     dimensions: list[DimensionOut]
     presets: list[HierarchyPresetOut]
@@ -300,8 +337,14 @@ class WidgetIn(BaseModel):
     granularity: str = "day"
     item_keys: list[str] = Field(default_factory=list)
     provider: str | None = None
+    service: str | None = None
+    resource_type: str | None = None
+    category: str | None = None
+    q: str | None = None
     tag_key: str | None = None
     tag_value: str | None = None
+    tag_filters: list[TagFilter] = Field(default_factory=list)
+    limit: int = 12
 
 
 class DashboardIn(BaseModel):
@@ -770,6 +813,135 @@ class EntraGroupPatch(BaseModel):
 class EntraMemberIn(BaseModel):
     entra_user_id: str | None = None
     user_id: UUID | None = None
+
+
+class DevOpsProjectOut(BaseModel):
+    id: UUID
+    ado_project_id: str
+    name: str
+    description: str = ""
+    url: str = ""
+    state: str = "wellFormed"
+    monitored: bool = False
+    last_scan_at: datetime | None = None
+
+
+class DevOpsProjectSelectIn(BaseModel):
+    connection_id: UUID
+    project_ids: list[str] = Field(default_factory=list)
+
+
+class DevOpsPullRequestOut(BaseModel):
+    id: UUID
+    ado_project_id: str
+    project_name: str
+    repo_id: str
+    repo_name: str
+    pr_id: int
+    title: str
+    created_by: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    source_branch: str = ""
+    target_branch: str = ""
+    is_draft: bool = False
+    reviewer_count: int = 0
+    url: str = ""
+    age_days: int | None = None
+
+
+class DevOpsStaleBranchOut(BaseModel):
+    id: UUID
+    ado_project_id: str
+    project_name: str
+    repo_id: str
+    repo_name: str
+    branch_name: str
+    last_commit_at: datetime | None = None
+    last_commit_by: str = ""
+    days_stale: int = 0
+    url: str = ""
+
+
+class DevOpsPipelineAlertOut(BaseModel):
+    id: UUID
+    ado_project_id: str
+    project_name: str
+    pipeline_id: int
+    pipeline_name: str
+    consecutive_failures: int = 0
+    failure_count: int = 0
+    run_count: int = 0
+    failure_rate: float = 0
+    reason: str = "consecutive"
+    last_result: str = ""
+    last_run_at: datetime | None = None
+    last_run_url: str = ""
+    url: str = ""
+    recent_results: list[Any] = Field(default_factory=list)
+
+
+class DevOpsRepoPullRequestsOut(BaseModel):
+    repo_id: str
+    repo_name: str
+    project_name: str
+    ado_project_id: str
+    pr_count: int
+    oldest_age_days: int | None = None
+    url: str = ""
+    pull_requests: list[DevOpsPullRequestOut] = Field(default_factory=list)
+
+
+class DevOpsRepoStaleBranchesOut(BaseModel):
+    repo_id: str
+    repo_name: str
+    project_name: str
+    ado_project_id: str
+    branch_count: int
+    oldest_days: int = 0
+    url: str = ""
+    branches: list[DevOpsStaleBranchOut] = Field(default_factory=list)
+
+
+class DevOpsSummaryOut(BaseModel):
+    projects: int = 0
+    monitored: int = 0
+    repositories_with_pull_requests: int = 0
+    active_pull_requests: int = 0
+    repositories_with_stale_branches: int = 0
+    stale_branches: int = 0
+    failing_pipelines: int = 0
+
+
+class DevOpsThresholdsOut(BaseModel):
+    stale_days: int = 30
+    pipeline_lookback: int = 8
+    fail_consecutive: int = 3
+    fail_rate: float = 0.75
+
+
+class DevOpsScanOut(BaseModel):
+    connection_id: UUID
+    projects: int = 0
+    pull_requests: int = 0
+    stale_branches: int = 0
+    pipeline_alerts: int = 0
+
+
+class DevOpsReportOut(BaseModel):
+    connection_id: UUID
+    connection_name: str
+    organization: str = ""
+    status: str
+    credentials_configured: bool
+    last_scan_at: datetime | None = None
+    last_error: str | None = None
+    thresholds: DevOpsThresholdsOut
+    summary: DevOpsSummaryOut
+    projects: list[DevOpsProjectOut] = Field(default_factory=list)
+    repositories_with_pull_requests: list[DevOpsRepoPullRequestsOut] = Field(default_factory=list)
+    repositories_with_stale_branches: list[DevOpsRepoStaleBranchesOut] = Field(default_factory=list)
+    pipeline_alerts: list[DevOpsPipelineAlertOut] = Field(default_factory=list)
 
 
 CurrentUser.model_rebuild()

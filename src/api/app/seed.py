@@ -14,6 +14,10 @@ from app.models import (
     Connection,
     CostLineItem,
     Dashboard,
+    DevOpsPipelineAlert,
+    DevOpsProject,
+    DevOpsPullRequest,
+    DevOpsStaleBranch,
     GroupPrivilege,
     GroupRole,
     RolePrivilege,
@@ -21,51 +25,18 @@ from app.models import (
     UserPrivilege,
     UserRole,
 )
+from app.auth import ensure_break_glass_user
+from app.identity import BREAK_GLASS_OID
 from app.privileges import ALL_KEYS, DEMO_COST_KEYS, PLATFORM_ADMIN_KEY, PLATFORM_ADMIN_ROLE_NAME
 from app.services.recommend import refresh_recommendations
 
-DEMO_USERS = [
-    {
-        "entra_oid": "demo-admin",
-        "email": "avery.chen@lookingglass.local",
-        "display_name": "Avery Chen",
-        "roles": ["platform_admin"],
-        "status": "active",
-        "notes": "Seeded platform administrator.",
-    },
-    {
-        "entra_oid": "demo-infra",
-        "email": "sam.okonkwo@lookingglass.local",
-        "display_name": "Sam Okonkwo",
-        "roles": ["analyst"],
-        "status": "active",
-        "notes": "",
-    },
-    {
-        "entra_oid": "demo-project",
-        "email": "priya.shah@lookingglass.local",
-        "display_name": "Priya Shah",
-        "roles": ["analyst"],
-        "status": "active",
-        "notes": "",
-    },
-    {
-        "entra_oid": "demo-maya",
-        "email": "maya.patel@lookingglass.local",
-        "display_name": "Maya Patel",
-        "roles": ["analyst"],
-        "status": "disabled",
-        "notes": "Former contractor. Account kept for audit, access revoked.",
-    },
-    {
-        "entra_oid": "demo-jordan",
-        "email": "jordan.lee@lookingglass.local",
-        "display_name": "Jordan Lee",
-        "roles": ["analyst"],
-        "status": "active",
-        "notes": "Waiting for group assignment.",
-    },
-]
+DEMO_PERSONA_OIDS = (
+    "demo-admin",
+    "demo-infra",
+    "demo-project",
+    "demo-maya",
+    "demo-jordan",
+)
 
 
 async def seed_if_empty(session: AsyncSession) -> None:
@@ -76,22 +47,6 @@ async def seed_if_empty(session: AsyncSession) -> None:
 
 
 async def seed(session: AsyncSession) -> None:
-    users = {}
-    for spec in DEMO_USERS:
-        user = User(
-            entra_oid=spec["entra_oid"],
-            email=spec["email"],
-            display_name=spec["display_name"],
-            roles=spec["roles"],
-            entra_group_ids=[],
-            status=spec.get("status", "active"),
-            notes=spec.get("notes", ""),
-            last_login_at=datetime.now(UTC) if spec.get("status", "active") == "active" else None,
-        )
-        session.add(user)
-        users[spec["entra_oid"]] = user
-    await session.flush()
-
     connections = [
         Connection(
             name="Contoso Corp – Azure tenant",
@@ -168,26 +123,12 @@ async def seed(session: AsyncSession) -> None:
             GroupRole(group_id=alpha.id, role_id=cost_role.id),
             AccessGroupScope(group_id=infra.id, tag_key="team", tag_value="infra"),
             AccessGroupScope(group_id=alpha.id, tag_key="project", tag_value="alpha"),
-            AccessGroupMember(
-                group_id=admins.id,
-                user_id=users["demo-admin"].id,
-                email=users["demo-admin"].email,
-                entra_oid=users["demo-admin"].entra_oid,
-            ),
-            AccessGroupMember(
-                group_id=infra.id,
-                user_id=users["demo-infra"].id,
-                email=users["demo-infra"].email,
-                entra_oid=users["demo-infra"].entra_oid,
-            ),
-            AccessGroupMember(
-                group_id=alpha.id,
-                user_id=users["demo-project"].id,
-                email=users["demo-project"].email,
-                entra_oid=users["demo-project"].entra_oid,
-            ),
         ]
     )
+
+    infra_id = infra.id
+    admin = await ensure_break_glass_user(session)
+    admin_id = admin.id
 
     resources = _resources(connections)
     session.add_all(_cost_rows(resources))
@@ -197,7 +138,7 @@ async def seed(session: AsyncSession) -> None:
         Dashboard(
             name="Organisation overview",
             description="Multi-cloud spend, providers and top services.",
-            owner_user_id=users["demo-admin"].id,
+            owner_user_id=admin_id,
             visibility="org",
             widgets=[
                 {"id": "w1", "type": "kpi", "title": "Period spend", "group_by": "service", "date_range": "30d"},
@@ -213,9 +154,9 @@ async def seed(session: AsyncSession) -> None:
         Dashboard(
             name="Infra estate",
             description="Shared with the Infra access group.",
-            owner_user_id=users["demo-admin"].id,
+            owner_user_id=admin_id,
             visibility="group",
-            shared_group_id=infra.id,
+            shared_group_id=infra_id,
             widgets=[
                 {"id": "i1", "type": "kpi", "title": "Infra spend", "group_by": "service", "date_range": "30d"},
                 {"id": "i2", "type": "timeseries", "title": "Infra daily", "group_by": "account", "date_range": "30d"},
@@ -226,28 +167,317 @@ async def seed(session: AsyncSession) -> None:
     )
     await session.commit()
     await refresh_recommendations(session)
+    await ensure_devops_demo(session)
+
+
+async def ensure_devops_demo(session: AsyncSession) -> None:
+    """Seed a sample Azure DevOps health snapshot when none exists yet."""
+    existing = (
+        await session.execute(select(Connection).where(Connection.provider == "azure_devops"))
+    ).scalars().first()
+    if existing is not None:
+        return
+    now = datetime.now(UTC)
+    connection = Connection(
+        name="Contoso Engineering – Azure DevOps",
+        provider="azure_devops",
+        status="connected",
+        config={
+            "organization": "contoso",
+            "organization_url": "https://dev.azure.com/contoso",
+            "stale_days": 30,
+            "pipeline_lookback": 8,
+            "fail_consecutive": 3,
+            "fail_rate": 0.75,
+            "note": "Seeded demo organisation",
+            "monitored_project_ids": [
+                "ado-platform",
+                "ado-website",
+                "ado-payments",
+            ],
+        },
+        last_ingest_at=now,
+    )
+    session.add(connection)
+    await session.flush()
+
+    platform = DevOpsProject(
+        connection_id=connection.id,
+        ado_project_id="ado-platform",
+        name="Platform",
+        description="Shared platform services and Looking Glass.",
+        url="https://dev.azure.com/contoso/Platform",
+        monitored=True,
+        last_scan_at=now,
+    )
+    website = DevOpsProject(
+        connection_id=connection.id,
+        ado_project_id="ado-website",
+        name="Website",
+        description="Public site and CMS.",
+        url="https://dev.azure.com/contoso/Website",
+        monitored=True,
+        last_scan_at=now,
+    )
+    payments = DevOpsProject(
+        connection_id=connection.id,
+        ado_project_id="ado-payments",
+        name="Payments",
+        description="Ledger and checkout APIs.",
+        url="https://dev.azure.com/contoso/Payments",
+        monitored=True,
+        last_scan_at=now,
+    )
+    archive = DevOpsProject(
+        connection_id=connection.id,
+        ado_project_id="ado-archive",
+        name="Archive",
+        description="Retired products. Left unmonitored.",
+        url="https://dev.azure.com/contoso/Archive",
+        monitored=False,
+    )
+    session.add_all([platform, website, payments, archive])
+
+    def ago(days: int, hours: int = 0) -> datetime:
+        return now - timedelta(days=days, hours=hours)
+
+    session.add_all(
+        [
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                repo_id="repo-looking-glass",
+                repo_name="looking-glass",
+                pr_id=1842,
+                title="Add cost facets from ingested resource types",
+                created_by="Avery Chen",
+                created_at=ago(2, 4),
+                updated_at=ago(0, 3),
+                source_branch="feat/cost-facets",
+                target_branch="main",
+                reviewer_count=2,
+                url="https://dev.azure.com/contoso/Platform/_git/looking-glass/pullrequest/1842",
+            ),
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                repo_id="repo-looking-glass",
+                repo_name="looking-glass",
+                pr_id=1799,
+                title="Wire Azure DevOps health checks",
+                created_by="Sam Okonkwo",
+                created_at=ago(11, 6),
+                updated_at=ago(1, 2),
+                source_branch="feat/ado-health",
+                target_branch="main",
+                reviewer_count=1,
+                url="https://dev.azure.com/contoso/Platform/_git/looking-glass/pullrequest/1799",
+            ),
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                repo_id="repo-infra-bicep",
+                repo_name="infra-bicep",
+                pr_id=412,
+                title="UK South Container Apps environment",
+                created_by="Priya Shah",
+                created_at=ago(4, 1),
+                updated_at=ago(0, 8),
+                source_branch="feat/cae-uksouth",
+                target_branch="main",
+                reviewer_count=3,
+                url="https://dev.azure.com/contoso/Platform/_git/infra-bicep/pullrequest/412",
+            ),
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-website",
+                project_name="Website",
+                repo_id="repo-www",
+                repo_name="www",
+                pr_id=908,
+                title="Hero banner for Q3 campaign",
+                created_by="Jordan Lee",
+                created_at=ago(1, 5),
+                updated_at=ago(0, 1),
+                source_branch="feat/q3-hero",
+                target_branch="main",
+                is_draft=True,
+                reviewer_count=0,
+                url="https://dev.azure.com/contoso/Website/_git/www/pullrequest/908",
+            ),
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-website",
+                project_name="Website",
+                repo_id="repo-www",
+                repo_name="www",
+                pr_id=881,
+                title="Fix cookie banner contrast",
+                created_by="Maya Patel",
+                created_at=ago(6, 2),
+                updated_at=ago(2, 4),
+                source_branch="fix/cookie-contrast",
+                target_branch="main",
+                reviewer_count=2,
+                url="https://dev.azure.com/contoso/Website/_git/www/pullrequest/881",
+            ),
+            DevOpsPullRequest(
+                connection_id=connection.id,
+                ado_project_id="ado-website",
+                project_name="Website",
+                repo_id="repo-www",
+                repo_name="www",
+                pr_id=860,
+                title="Migrate image CDN to Front Door",
+                created_by="Sam Okonkwo",
+                created_at=ago(15, 0),
+                updated_at=ago(3, 0),
+                source_branch="feat/frontdoor-cdn",
+                target_branch="main",
+                reviewer_count=1,
+                url="https://dev.azure.com/contoso/Website/_git/www/pullrequest/860",
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            DevOpsStaleBranch(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                repo_id="repo-looking-glass",
+                repo_name="looking-glass",
+                branch_name="feature/old-auth",
+                last_commit_at=ago(87),
+                last_commit_by="Maya Patel",
+                days_stale=87,
+                url="https://dev.azure.com/contoso/Platform/_git/looking-glass?version=GBfeature/old-auth",
+            ),
+            DevOpsStaleBranch(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                repo_id="repo-looking-glass",
+                repo_name="looking-glass",
+                branch_name="spike/cost-export",
+                last_commit_at=ago(45),
+                last_commit_by="Avery Chen",
+                days_stale=45,
+                url="https://dev.azure.com/contoso/Platform/_git/looking-glass?version=GBspike/cost-export",
+            ),
+            DevOpsStaleBranch(
+                connection_id=connection.id,
+                ado_project_id="ado-website",
+                project_name="Website",
+                repo_id="repo-www",
+                repo_name="www",
+                branch_name="hotfix/banner-2024",
+                last_commit_at=ago(120),
+                last_commit_by="Jordan Lee",
+                days_stale=120,
+                url="https://dev.azure.com/contoso/Website/_git/www?version=GBhotfix/banner-2024",
+            ),
+            DevOpsStaleBranch(
+                connection_id=connection.id,
+                ado_project_id="ado-payments",
+                project_name="Payments",
+                repo_id="repo-ledger",
+                repo_name="ledger",
+                branch_name="experiment/double-entry",
+                last_commit_at=ago(62),
+                last_commit_by="Priya Shah",
+                days_stale=62,
+                url="https://dev.azure.com/contoso/Payments/_git/ledger?version=GBexperiment/double-entry",
+            ),
+        ]
+    )
+    session.add_all(
+        [
+            DevOpsPipelineAlert(
+                connection_id=connection.id,
+                ado_project_id="ado-platform",
+                project_name="Platform",
+                pipeline_id=77,
+                pipeline_name="deploy-api",
+                consecutive_failures=5,
+                failure_count=5,
+                run_count=8,
+                failure_rate=0.625,
+                reason="consecutive",
+                last_result="failed",
+                last_run_at=ago(0, 2),
+                last_run_url="https://dev.azure.com/contoso/Platform/_build/results?buildId=9101",
+                url="https://dev.azure.com/contoso/Platform/_build?definitionId=77",
+                recent_results=[
+                    {"id": 9101, "result": "failed", "buildNumber": "2026.10.09.1"},
+                    {"id": 9094, "result": "failed", "buildNumber": "2026.10.08.4"},
+                    {"id": 9088, "result": "failed", "buildNumber": "2026.10.08.2"},
+                    {"id": 9072, "result": "failed", "buildNumber": "2026.10.07.3"},
+                    {"id": 9061, "result": "failed", "buildNumber": "2026.10.07.1"},
+                    {"id": 9040, "result": "succeeded", "buildNumber": "2026.10.06.2"},
+                ],
+            ),
+            DevOpsPipelineAlert(
+                connection_id=connection.id,
+                ado_project_id="ado-website",
+                project_name="Website",
+                pipeline_id=12,
+                pipeline_name="www-ci",
+                consecutive_failures=2,
+                failure_count=6,
+                run_count=8,
+                failure_rate=0.75,
+                reason="rate",
+                last_result="failed",
+                last_run_at=ago(0, 6),
+                last_run_url="https://dev.azure.com/contoso/Website/_build/results?buildId=4402",
+                url="https://dev.azure.com/contoso/Website/_build?definitionId=12",
+                recent_results=[
+                    {"id": 4402, "result": "failed", "buildNumber": "4402"},
+                    {"id": 4398, "result": "failed", "buildNumber": "4398"},
+                    {"id": 4391, "result": "succeeded", "buildNumber": "4391"},
+                    {"id": 4384, "result": "failed", "buildNumber": "4384"},
+                    {"id": 4377, "result": "failed", "buildNumber": "4377"},
+                    {"id": 4370, "result": "failed", "buildNumber": "4370"},
+                    {"id": 4362, "result": "succeeded", "buildNumber": "4362"},
+                    {"id": 4355, "result": "failed", "buildNumber": "4355"},
+                ],
+            ),
+            DevOpsPipelineAlert(
+                connection_id=connection.id,
+                ado_project_id="ado-payments",
+                project_name="Payments",
+                pipeline_id=5,
+                pipeline_name="ledger-release",
+                consecutive_failures=3,
+                failure_count=3,
+                run_count=5,
+                failure_rate=0.6,
+                reason="consecutive",
+                last_result="failed",
+                last_run_at=ago(1, 3),
+                last_run_url="https://dev.azure.com/contoso/Payments/_build/results?buildId=221",
+                url="https://dev.azure.com/contoso/Payments/_build?definitionId=5",
+                recent_results=[
+                    {"id": 221, "result": "failed", "buildNumber": "221"},
+                    {"id": 218, "result": "failed", "buildNumber": "218"},
+                    {"id": 214, "result": "failed", "buildNumber": "214"},
+                    {"id": 210, "result": "succeeded", "buildNumber": "210"},
+                    {"id": 206, "result": "succeeded", "buildNumber": "206"},
+                ],
+            ),
+        ]
+    )
+    await session.commit()
 
 
 async def ensure_iam(session: AsyncSession) -> None:
     """Backfill the Platform Admins group and migrate raw privileges onto roles."""
-    for spec in DEMO_USERS:
-        existing = (
-            await session.execute(select(User).where(User.entra_oid == spec["entra_oid"]))
-        ).scalar_one_or_none()
-        if existing is None:
-            session.add(
-                User(
-                    entra_oid=spec["entra_oid"],
-                    email=spec["email"],
-                    display_name=spec["display_name"],
-                    roles=spec["roles"],
-                    entra_group_ids=[],
-                    status=spec.get("status", "active"),
-                    notes=spec.get("notes", ""),
-                    last_login_at=datetime.now(UTC) if spec.get("status", "active") == "active" else None,
-                )
-            )
-    await session.flush()
+    await ensure_break_glass_user(session)
+    await _purge_demo_personas(session)
 
     admins = (
         await session.execute(select(AccessGroup).where(AccessGroup.name == "Platform Admins"))
@@ -317,7 +547,38 @@ async def ensure_iam(session: AsyncSession) -> None:
     await _migrate_group_privileges(session)
     await _migrate_user_privileges(session)
     await _strip_unknown_role_privileges(session)
+    await _ensure_demo_devops_read(session)
     await session.commit()
+
+
+async def _purge_demo_personas(session: AsyncSession) -> None:
+    """Remove leftover demo login accounts from earlier builds."""
+    await _reassign_demo_dashboards(session)
+    rows = (
+        await session.execute(select(User).where(User.entra_oid.in_(DEMO_PERSONA_OIDS)))
+    ).scalars().all()
+    for user in rows:
+        if user.entra_oid == BREAK_GLASS_OID:
+            continue
+        await session.delete(user)
+
+
+async def _reassign_demo_dashboards(session: AsyncSession) -> None:
+    admin = (
+        await session.execute(select(User).where(User.entra_oid == BREAK_GLASS_OID))
+    ).scalar_one_or_none()
+    if admin is None:
+        return
+    owners = (
+        await session.execute(select(User.id).where(User.entra_oid.in_(DEMO_PERSONA_OIDS)))
+    ).scalars().all()
+    if not owners:
+        return
+    dashboards = (
+        await session.execute(select(Dashboard).where(Dashboard.owner_user_id.in_(owners)))
+    ).scalars().all()
+    for dashboard in dashboards:
+        dashboard.owner_user_id = admin.id
 
 
 async def _migrate_group_privileges(session: AsyncSession) -> None:
@@ -391,6 +652,19 @@ async def _migrate_user_privileges(session: AsyncSession) -> None:
             for key in sorted(keys):
                 session.add(RolePrivilege(role_id=role.id, privilege_key=key))
         session.add(UserRole(user_id=user.id, role_id=role.id))
+
+
+async def _ensure_demo_devops_read(session: AsyncSession) -> None:
+    """Grant devops.read to roles that already hold the original FinOps bundle."""
+    cost_bundle = set(DEMO_COST_KEYS) - {"devops.read"}
+    roles = (
+        await session.execute(select(AccessRole).options(selectinload(AccessRole.privilege_grants)))
+    ).scalars().all()
+    for role in roles:
+        keys = {row.privilege_key for row in role.privilege_grants}
+        if "devops.read" in keys or not cost_bundle.issubset(keys):
+            continue
+        session.add(RolePrivilege(role_id=role.id, privilege_key="devops.read"))
 
 
 async def _strip_unknown_role_privileges(session: AsyncSession) -> None:

@@ -112,6 +112,18 @@ CATALOG: tuple[Privilege, ...] = (
         "Manage dashboards",
         "Create and edit dashboards the user owns.",
     ),
+    Privilege(
+        "devops.read",
+        "DevOps",
+        "View DevOps health",
+        "Open the Azure DevOps health dashboard: active pull requests, stale branches, and failing pipelines.",
+    ),
+    Privilege(
+        "devops.write",
+        "DevOps",
+        "Manage DevOps health",
+        "Connect Azure DevOps organisations, choose projects to monitor, and run health checks.",
+    ),
 )
 
 BY_KEY = {item.key: item for item in CATALOG}
@@ -126,6 +138,7 @@ DEMO_COST_KEYS = (
     "finops.dashboards.read",
     "finops.dashboards.write",
     "connections.read",
+    "devops.read",
 )
 
 

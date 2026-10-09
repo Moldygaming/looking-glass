@@ -86,7 +86,15 @@ async def update_connection(
     if body.name is not None:
         connection.name = body.name
     if body.config is not None:
-        connection.config = public_config(body.config)
+        incoming = public_config(body.config)
+        if connection.provider == "azure_devops":
+            merged = dict(connection.config or {})
+            merged.update(incoming)
+            if "monitored_project_ids" not in incoming:
+                merged["monitored_project_ids"] = (connection.config or {}).get("monitored_project_ids") or []
+            connection.config = merged
+        else:
+            connection.config = incoming
     if body.secrets is not None:
         connection.secrets = merge_secrets(connection.secrets, body.secrets.model_dump())
     if body.secret_ref is not None:
@@ -144,13 +152,15 @@ async def ingest_connection(
         )
     try:
         written = await run_connection_ingest(session, connection_id)
-    except Exception as exc:  # noqa: BLE001 — return Azure/AWS/GCP ingest errors to the UI
+    except Exception as exc:  # noqa: BLE001 — return Azure/AWS/GCP/ADO ingest errors to the UI
         raise HTTPException(status_code=400, detail=str(exc)[:2000]) from exc
+    if connection.provider == "azure_devops":
+        return {"written": written, "kind": "devops"}
     try:
         await refresh_recommendations(session)
     except Exception:  # noqa: BLE001 — cost rows are already stored
         pass
-    return {"written": written}
+    return {"written": written, "kind": "costs"}
 
 
 async def _get(session: AsyncSession, connection_id: UUID) -> Connection:

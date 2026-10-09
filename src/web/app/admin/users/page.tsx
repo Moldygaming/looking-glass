@@ -40,6 +40,21 @@ export default function UsersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function deleteUser(row: UserRow) {
+    if (row.entra_oid === "local-break-glass") return;
+    if (!window.confirm(`Delete ${row.display_name}? They will be removed from Looking Glass.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/admin/users/${row.id}`, { method: "DELETE" });
+      setRows((current) => current.filter((item) => item.id !== row.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete user");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function createUser() {
     setSaving(true);
     setError(null);
@@ -131,6 +146,7 @@ export default function UsersPage() {
               <th>Groups</th>
               <th>Access</th>
               <th>Last seen</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -164,11 +180,18 @@ export default function UsersPage() {
                       : `${row.privilege_count} permission${row.privilege_count === 1 ? "" : "s"}`}
                 </td>
                 <td className="whitespace-nowrap text-mist-400">{when(row.last_login_at)}</td>
+                <td className="text-right">
+                  {canWrite && row.entra_oid !== "local-break-glass" && (
+                    <button className="text-xs text-rose hover:underline" disabled={saving} onClick={() => deleteUser(row)}>
+                      Delete
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
             {!rows.length && (
               <tr>
-                <td colSpan={5} className="py-8 text-center text-mist-500">
+                <td colSpan={6} className="py-8 text-center text-mist-500">
                   No users match those filters.
                 </td>
               </tr>

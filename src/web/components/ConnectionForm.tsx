@@ -5,13 +5,18 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { Connection } from "@/lib/types";
 
-type Provider = "azure" | "aws" | "gcp";
+type Provider = "azure" | "aws" | "gcp" | "azure_devops";
 type TagRow = { key: string; value: string };
 
 const providers: { id: Provider; title: string; body: string }[] = [
   { id: "azure", title: "Azure tenant", body: "Entra tenant + Cost Management scope (subscription, management group, or billing account)." },
   { id: "aws", title: "AWS organisation", body: "Payer / linked account with Cost Explorer or a CUR path." },
   { id: "gcp", title: "GCP organisation", body: "Billing account export in BigQuery plus a service account." },
+  {
+    id: "azure_devops",
+    title: "Azure DevOps",
+    body: "Organisation + PAT. Choose projects to monitor for pull requests, stale branches and failing pipelines.",
+  },
 ];
 
 function str(config: Record<string, unknown>, key: string, fallback = "") {
@@ -87,6 +92,17 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
   const [billingTable, setBillingTable] = useState(str(initial, "billing_table"));
   const [saJson, setSaJson] = useState("");
 
+  const [organization, setOrganization] = useState(str(initial, "organization"));
+  const [organizationUrl, setOrganizationUrl] = useState(str(initial, "organization_url"));
+  const [pat, setPat] = useState("");
+  const [staleDays, setStaleDays] = useState(num(initial, "stale_days", 30));
+  const [pipelineLookback, setPipelineLookback] = useState(num(initial, "pipeline_lookback", 8));
+  const [failConsecutive, setFailConsecutive] = useState(num(initial, "fail_consecutive", 3));
+  const failRateRaw = Number(initial.fail_rate);
+  const [failRate, setFailRate] = useState(
+    Number.isFinite(failRateRaw) && failRateRaw > 0 ? (failRateRaw > 1 ? failRateRaw : Math.round(failRateRaw * 100)) : 75
+  );
+
   const azureScope = useMemo(
     () => buildScope(scopeKind, scopeValue, scopeCustom),
     [scopeKind, scopeValue, scopeCustom]
@@ -119,6 +135,23 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         provider,
         config: { ...shared, account_id: accountId.trim(), region, cur_uri: curUri.trim() },
         secrets: { access_key_id: accessKey, secret_access_key: secretKey },
+      };
+    }
+    if (provider === "azure_devops") {
+      const monitored = existing?.config?.monitored_project_ids;
+      return {
+        name,
+        provider,
+        config: {
+          organization: organization.trim(),
+          organization_url: organizationUrl.trim(),
+          stale_days: staleDays,
+          pipeline_lookback: pipelineLookback,
+          fail_consecutive: failConsecutive,
+          fail_rate: failRate / 100,
+          monitored_project_ids: Array.isArray(monitored) ? monitored : [],
+        },
+        secrets: { pat },
       };
     }
     return {
@@ -182,8 +215,12 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
     setMessage(null);
     try {
       await api(`/connections/${existing.id}`, { method: "PUT", body: JSON.stringify(payload()) });
-      const result = await api<{ written: number }>(`/connections/${existing.id}/ingest`, { method: "POST" });
-      setMessage(`Ingest finished. ${result.written} cost rows written.`);
+      const result = await api<{ written: number; kind?: string }>(`/connections/${existing.id}/ingest`, { method: "POST" });
+      setMessage(
+        result.kind === "devops"
+          ? `Health check finished. ${result.written} findings written.`
+          : `Ingest finished. ${result.written} cost rows written.`
+      );
       setLastError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Ingest failed");
@@ -193,7 +230,15 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
   }
 
   async function remove() {
-    if (!existing || !confirm("Delete this cloud connection? Its ingested cost rows will be removed.")) return;
+    if (
+      !existing ||
+      !confirm(
+        provider === "azure_devops"
+          ? "Delete this Azure DevOps connection? Health snapshots will be removed."
+          : "Delete this cloud connection? Its ingested cost rows will be removed."
+      )
+    )
+      return;
     setBusy("delete");
     try {
       await api(`/connections/${existing.id}`, { method: "DELETE" });
@@ -206,7 +251,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
 
   if (!provider) {
     return (
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {providers.map((p) => (
           <button key={p.id} className="panel-pad text-left hover:border-glass/40" onClick={() => setProvider(p.id)}>
             <div className="text-xs uppercase tracking-[0.16em] text-glass">{p.id}</div>
@@ -332,6 +377,101 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         </section>
       )}
 
+      {provider === "azure_devops" && (
+        <section className="panel-pad space-y-4">
+          <h2 className="font-display text-xl">Azure DevOps organisation</h2>
+          <p className="text-sm text-mist-400">
+            Create a PAT with <span className="text-mist-100">Code (Read)</span>,{" "}
+            <span className="text-mist-100">Build (Read)</span> and{" "}
+            <span className="text-mist-100">Project and team (Read)</span>. After saving, open DevOps health to choose
+            which projects to monitor.
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="label">Organisation</label>
+              <input
+                className="input font-mono"
+                value={organization}
+                onChange={(e) => setOrganization(e.target.value)}
+                placeholder="contoso"
+              />
+            </div>
+            <div>
+              <label className="label">Organisation URL (optional)</label>
+              <input
+                className="input font-mono"
+                value={organizationUrl}
+                onChange={(e) => setOrganizationUrl(e.target.value)}
+                placeholder="https://dev.azure.com/contoso"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="label">Personal access token</label>
+              <input
+                className="input font-mono"
+                type="password"
+                value={pat}
+                onChange={(e) => setPat(e.target.value)}
+                placeholder={existing?.credentials_configured ? "Leave blank to keep the current token" : "Paste a PAT"}
+              />
+            </div>
+            <div>
+              <label className="label">Stale branch after (days)</label>
+              <input
+                className="input"
+                type="number"
+                min={7}
+                max={365}
+                value={staleDays}
+                onChange={(e) => setStaleDays(Number(e.target.value) || 30)}
+              />
+            </div>
+            <div>
+              <label className="label">Pipeline runs to inspect</label>
+              <input
+                className="input"
+                type="number"
+                min={3}
+                max={20}
+                value={pipelineLookback}
+                onChange={(e) => setPipelineLookback(Number(e.target.value) || 8)}
+              />
+            </div>
+            <div>
+              <label className="label">Consecutive failures to alert</label>
+              <input
+                className="input"
+                type="number"
+                min={2}
+                max={10}
+                value={failConsecutive}
+                onChange={(e) => setFailConsecutive(Number(e.target.value) || 3)}
+              />
+            </div>
+            <div>
+              <label className="label">Failure rate alert (%)</label>
+              <input
+                className="input"
+                type="number"
+                min={50}
+                max={100}
+                value={failRate}
+                onChange={(e) => setFailRate(Number(e.target.value) || 75)}
+              />
+            </div>
+          </div>
+          {existing && (
+            <p className="hint">
+              Project selection and the health report live on{" "}
+              <a className="text-glass hover:underline" href="/devops">
+                DevOps health
+              </a>
+              .
+            </p>
+          )}
+        </section>
+      )}
+
       {provider === "gcp" && (
         <section className="panel-pad space-y-4">
           <h2 className="font-display text-xl">GCP identity</h2>
@@ -360,6 +500,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         </section>
       )}
 
+      {provider !== "azure_devops" && (
       <section className="panel-pad space-y-4">
         <h2 className="font-display text-xl">Ingest options</h2>
         <div className="grid gap-4 md:grid-cols-2">
@@ -401,6 +542,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
           <p className="hint">Use this when the cloud export does not already carry organisation tags you want in access groups.</p>
         </div>
       </section>
+      )}
 
       {(error || lastError) && <div className="panel-pad text-sm text-rose">{error || lastError}</div>}
       {message && <div className="panel-pad text-sm text-glass">{message}</div>}
@@ -415,7 +557,13 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         {existing && (
           <>
             <button className="btn-ghost" onClick={ingest} disabled={Boolean(busy)}>
-              {busy === "ingest" ? "Ingesting…" : "Run ingest"}
+              {busy === "ingest"
+                ? provider === "azure_devops"
+                  ? "Checking…"
+                  : "Ingesting…"
+                : provider === "azure_devops"
+                  ? "Run health check"
+                  : "Run ingest"}
             </button>
             <button className="btn-danger ml-auto" onClick={remove} disabled={Boolean(busy)}>
               Delete

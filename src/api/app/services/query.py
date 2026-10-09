@@ -6,7 +6,7 @@ from sqlalchemy.sql import ColumnElement
 
 from app.acl import cost_acl
 from app.models import CostLineItem
-from app.schemas import CostQuery, CurrentUser
+from app.schemas import CostQuery, CurrentUser, TagFilter
 from app.services.objects import dimension_expr, dimension_filter, dimension_label_expr, parse_focus, parse_object_key
 
 
@@ -36,6 +36,26 @@ def bucket_expr(granularity: str) -> ColumnElement:
     return CostLineItem.usage_date
 
 
+def parse_tag_query(raw: str | None) -> list[TagFilter]:
+    if not raw:
+        return []
+    filters: list[TagFilter] = []
+    for part in raw.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if "=" in chunk:
+            key, value = chunk.split("=", 1)
+        elif ":" in chunk:
+            key, value = chunk.split(":", 1)
+        else:
+            continue
+        key, value = key.strip(), value.strip()
+        if key and value:
+            filters.append(TagFilter(key=key, value=value))
+    return filters
+
+
 def period(from_date: date | None, to_date: date | None, days: int = 30) -> tuple[date, date]:
     end = to_date or date.today()
     start = from_date or (end - timedelta(days=days - 1))
@@ -53,11 +73,23 @@ def apply_cost_filters(stmt: Select, user: CurrentUser, q: CostQuery) -> Select:
     if q.account_id:
         stmt = stmt.where(CostLineItem.account_id == q.account_id)
     if q.service:
-        stmt = stmt.where(CostLineItem.service == q.service)
+        stmt = stmt.where(CostLineItem.service.ilike(f"%{q.service}%"))
+    if q.resource_type:
+        stmt = stmt.where(func.lower(CostLineItem.resource_type) == q.resource_type.lower())
+    if q.category:
+        stmt = stmt.where(func.lower(CostLineItem.category) == q.category.lower())
     if q.region:
         stmt = stmt.where(CostLineItem.region == q.region)
+    filters = list(q.tag_filters or [])
     if q.tag_key and q.tag_value:
-        stmt = stmt.where(CostLineItem.tags[q.tag_key].astext == q.tag_value)
+        filters.append(TagFilter(key=q.tag_key, value=q.tag_value))
+    seen: set[tuple[str, str]] = set()
+    for item in filters:
+        pair = (item.key, item.value)
+        if pair in seen or not item.key or not item.value:
+            continue
+        seen.add(pair)
+        stmt = stmt.where(CostLineItem.tags[item.key].astext == item.value)
     if q.q:
         like = f"%{q.q}%"
         stmt = stmt.where(

@@ -7,11 +7,13 @@ from sqlalchemy.orm import selectinload
 
 from app.auth import load_user_access, require_admin_area, require_privilege
 from app.db import get_session
+from app.identity import BREAK_GLASS_OID
 from app.models import (
     AccessGroup,
     AccessGroupMember,
     AccessGroupScope,
     AccessRole,
+    Dashboard,
     GroupRole,
     RolePrivilege,
     User,
@@ -411,11 +413,31 @@ async def patch_user(
     if body.notes is not None:
         user.notes = body.notes
     if body.status is not None and body.status != (user.status or "active"):
+        if user.entra_oid == BREAK_GLASS_OID and body.status == "disabled":
+            raise HTTPException(status_code=400, detail="The break-glass account cannot be disabled")
         if body.status == "disabled":
             await _guard_losing_admin(session, user, disabling=True)
         user.status = body.status
     await session.commit()
     return await _user_detail(session, user.id, actor)
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: CurrentUser = Depends(require_privilege("admin.users.write")),
+):
+    user = await _get_user(session, user_id)
+    if user.entra_oid == BREAK_GLASS_OID:
+        raise HTTPException(status_code=400, detail="The break-glass account cannot be deleted")
+    if actor.id == user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    await _guard_losing_admin(session, user, disabling=True)
+    await _reassign_dashboards(session, user.id, actor.id)
+    await session.delete(user)
+    await session.commit()
+    return {"ok": True}
 
 
 @router.put("/users/{user_id}/roles", response_model=UserDetailOut)
@@ -821,6 +843,14 @@ async def _get_user(session: AsyncSession, user_id: UUID) -> User:
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return user
+
+
+async def _reassign_dashboards(session: AsyncSession, from_user_id: UUID, to_user_id: UUID) -> None:
+    rows = (
+        await session.execute(select(Dashboard).where(Dashboard.owner_user_id == from_user_id))
+    ).scalars().all()
+    for dashboard in rows:
+        dashboard.owner_user_id = to_user_id
 
 
 async def _load_group(session: AsyncSession, group_id: UUID) -> AccessGroup:

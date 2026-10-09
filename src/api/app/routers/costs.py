@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.acl import cost_acl
 from app.auth import get_current_user, require_privilege
 from app.db import get_session
 from app.models import Connection, CostLineItem, Recommendation
@@ -13,10 +14,12 @@ from app.schemas import (
     BreakdownRow,
     CostObjectFocus,
     CostObjectOut,
+    CostFacetsOut,
     CostObjectPage,
     CostPoint,
     CostQuery,
     CostSummary,
+    FacetValue,
     CurrentUser,
     DimensionCatalogOut,
     DimensionOut,
@@ -49,6 +52,7 @@ from app.services.query import (
     group_expr,
     label_expr,
     normalize_granularity,
+    parse_tag_query,
     period,
 )
 
@@ -66,10 +70,13 @@ def _query(
     connection_id=None,
     account_id=None,
     service=None,
+    resource_type=None,
+    category=None,
     region=None,
     group_by="service",
     tag_key=None,
     tag_value=None,
+    tags=None,
     q=None,
     keys=None,
     focus=None,
@@ -98,10 +105,13 @@ def _query(
         connection_id=connection_id,
         account_id=account_id,
         service=service,
+        resource_type=resource_type,
+        category=category,
         region=region,
         group_by=group_by,
         tag_key=tag_key,
         tag_value=tag_value,
+        tag_filters=parse_tag_query(tags),
         q=q,
         keys=key_list,
         focus=focus_list,
@@ -122,9 +132,27 @@ async def summary(
     connection_id=None,
     tag_key: str | None = None,
     tag_value: str | None = None,
+    tags: str | None = None,
+    service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
+    q: str | None = None,
     focus: str | None = None,
 ):
-    q = _query(from_date, to_date, provider, connection_id, tag_key=tag_key, tag_value=tag_value, focus=focus)
+    q = _query(
+        from_date,
+        to_date,
+        provider,
+        connection_id,
+        service=service,
+        resource_type=resource_type,
+        category=category,
+        tag_key=tag_key,
+        tag_value=tag_value,
+        tags=tags,
+        q=q,
+        focus=focus,
+    )
     start, end = period(q.from_date, q.to_date)
     length = (end - start).days + 1
     prior_end = start - timedelta(days=1)
@@ -134,14 +162,7 @@ async def summary(
     period_cost = float(
         await session.scalar(select(func.coalesce(func.sum(filtered.subquery().c.cost), 0))) or 0
     )
-    prior_q = CostQuery(
-        from_date=prior_start,
-        to_date=prior_end,
-        provider=provider,
-        connection_id=connection_id,
-        tag_key=tag_key,
-        tag_value=tag_value,
-    )
+    prior_q = q.model_copy(update={"from_date": prior_start, "to_date": prior_end})
     prior_filtered = apply_cost_filters(select(CostLineItem), user, prior_q)
     prior_cost = float(
         await session.scalar(select(func.coalesce(func.sum(prior_filtered.subquery().c.cost), 0))) or 0
@@ -224,8 +245,31 @@ async def series(
     connection_id=None,
     group_by: str = "service",
     granularity: str = "day",
+    tag_key: str | None = None,
+    tag_value: str | None = None,
+    tags: str | None = None,
+    service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
+    q: str | None = None,
+    focus: str | None = None,
 ):
-    q = _query(from_date, to_date, provider, connection_id, group_by=group_by, granularity=granularity)
+    q = _query(
+        from_date,
+        to_date,
+        provider,
+        connection_id,
+        group_by=group_by,
+        granularity=granularity,
+        tag_key=tag_key,
+        tag_value=tag_value,
+        tags=tags,
+        service=service,
+        resource_type=resource_type,
+        category=category,
+        q=q,
+        focus=focus,
+    )
     bucket = bucket_expr(q.granularity)
     stmt = (
         apply_cost_filters(
@@ -257,6 +301,10 @@ async def breakdown(
     group_by: str = Query(default="service"),
     tag_key: str | None = None,
     tag_value: str | None = None,
+    tags: str | None = None,
+    service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
     focus: str | None = None,
     q: str | None = None,
     limit: int = 12,
@@ -269,6 +317,10 @@ async def breakdown(
         group_by=group_by,
         tag_key=tag_key,
         tag_value=tag_value,
+        tags=tags,
+        service=service,
+        resource_type=resource_type,
+        category=category,
         q=q,
         focus=focus,
         limit=limit,
@@ -401,6 +453,10 @@ async def compare(
     granularity: str = Query(default="day"),
     tag_key: str | None = None,
     tag_value: str | None = None,
+    tags: str | None = None,
+    service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
     q: str | None = None,
     keys: str | None = None,
     focus: str | None = None,
@@ -428,6 +484,10 @@ async def compare(
                     group_by=kind,
                     tag_key=tag_key,
                     tag_value=tag_value,
+                    tags=tags,
+                    service=service,
+                    resource_type=resource_type,
+                    category=category,
                     q=q,
                     keys=value,
                     focus=focus,
@@ -454,6 +514,10 @@ async def compare(
         group_by=group_by,
         tag_key=tag_key,
         tag_value=tag_value,
+        tags=tags,
+        service=service,
+        resource_type=resource_type,
+        category=category,
         q=q,
         keys=keys,
         focus=focus,
@@ -476,9 +540,12 @@ async def line_items(
     connection_id=None,
     account_id: str | None = None,
     service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
     region: str | None = None,
     tag_key: str | None = None,
     tag_value: str | None = None,
+    tags: str | None = None,
     q: str | None = None,
     focus: str | None = None,
     limit: int = 50,
@@ -491,9 +558,12 @@ async def line_items(
         connection_id,
         account_id,
         service,
-        region,
+        resource_type=resource_type,
+        category=category,
+        region=region,
         tag_key=tag_key,
         tag_value=tag_value,
+        tags=tags,
         q=q,
         focus=focus,
         limit=limit,
@@ -527,6 +597,44 @@ async def list_dimensions(
     )
 
 
+@router.get("/facets", response_model=CostFacetsOut)
+async def cost_facets(
+    session: AsyncSession = Depends(get_session),
+    user: CurrentUser = Depends(get_current_user),
+):
+    rows = (
+        await session.execute(
+            select(
+                CostLineItem.provider,
+                CostLineItem.category,
+                CostLineItem.resource_type,
+                CostLineItem.service,
+            )
+            .where(cost_acl(user))
+            .distinct()
+        )
+    ).all()
+    providers = sorted({str(row.provider) for row in rows if row.provider})
+    categories = sorted({str(row.category) for row in rows if row.category})
+    resource_types: dict[tuple[str, str, str], FacetValue] = {}
+    services: dict[tuple[str, str, str], FacetValue] = {}
+    for row in rows:
+        provider = str(row.provider or "")
+        category = str(row.category or "")
+        rtype = str(row.resource_type or "")
+        service = str(row.service or "")
+        if rtype:
+            resource_types[(provider, category, rtype)] = FacetValue(name=rtype, provider=provider, category=category)
+        if service:
+            services[(provider, category, service)] = FacetValue(name=service, provider=provider, category=category)
+    return CostFacetsOut(
+        providers=providers,
+        categories=categories,
+        resource_types=sorted(resource_types.values(), key=lambda item: item.name.lower()),
+        services=sorted(services.values(), key=lambda item: item.name.lower()),
+    )
+
+
 @router.get("/objects", response_model=CostObjectPage)
 async def list_objects(
     session: AsyncSession = Depends(get_session),
@@ -540,6 +648,10 @@ async def list_objects(
     granularity: str = Query(default="day"),
     tag_key: str | None = None,
     tag_value: str | None = None,
+    tags: str | None = None,
+    service: str | None = None,
+    resource_type: str | None = None,
+    category: str | None = None,
     q: str | None = None,
     limit: int = 200,
 ):
@@ -555,6 +667,10 @@ async def list_objects(
         group_by=child_kind or "service",
         tag_key=tag_key,
         tag_value=tag_value,
+        tags=tags,
+        service=service,
+        resource_type=resource_type,
+        category=category,
         q=q,
         focus=focus,
         path=levels,

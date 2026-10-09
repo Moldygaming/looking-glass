@@ -17,6 +17,8 @@ SECRET_CONFIG_KEYS = {
     "access_key_id",
     "secret_access_key",
     "service_account_json",
+    "pat",
+    "personal_access_token",
 }
 
 CONNECTORS = {
@@ -30,6 +32,22 @@ async def run_connection_ingest(session: AsyncSession, connection_id: UUID) -> i
     connection = await session.get(Connection, connection_id)
     if connection is None:
         return 0
+    if connection.provider == "azure_devops":
+        if not _has_live_credentials(connection):
+            return 0
+        from app.services.devops import run_devops_scan
+
+        try:
+            result = await run_devops_scan(session, connection_id)
+            return result.pull_requests + result.stale_branches + result.pipeline_alerts
+        except Exception as exc:  # noqa: BLE001 — surface health-check errors on the connection
+            await session.rollback()
+            connection = await session.get(Connection, connection_id)
+            if connection is not None:
+                connection.status = "error"
+                connection.last_error = str(exc)[:2000]
+                await session.commit()
+            raise
     connector = CONNECTORS.get(connection.provider)
     if connector is None:
         connection.status = "error"
@@ -131,6 +149,8 @@ def connector_secret(connection: Connection) -> str | None:
         return json.dumps(payload)
     if connection.provider == "gcp":
         return secrets.get("service_account_json") or config.get("service_account_json")
+    if connection.provider == "azure_devops":
+        return secrets.get("pat") or secrets.get("personal_access_token") or config.get("pat")
     return None
 
 
@@ -151,10 +171,20 @@ def _has_live_credentials(connection: Connection) -> bool:
         )
     if connection.provider == "gcp":
         return bool(config.get("billing_table") and (secrets.get("service_account_json") or config.get("service_account_json")))
+    if connection.provider == "azure_devops":
+        org = config.get("organization") or config.get("organization_url")
+        pat = secrets.get("pat") or secrets.get("personal_access_token") or config.get("pat")
+        return bool(org and pat)
     return False
 
 
 async def test_connection(connection: Connection) -> str:
+    if connection.provider == "azure_devops":
+        from app.connectors.azure_devops import AzureDevOpsConnector
+
+        return await AzureDevOpsConnector().test(
+            public_config(connection.config or {}), connector_secret(connection)
+        )
     connector = CONNECTORS.get(connection.provider)
     if connector is None:
         raise ValueError(f"Unknown provider {connection.provider}")

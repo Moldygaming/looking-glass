@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { RoleChecklist } from "@/components/admin/RoleChecklist";
 import { StatusBadge } from "@/components/admin/StatusBadge";
@@ -13,8 +13,11 @@ import type { AccessRole, Group, UserDetail } from "@/lib/types";
 
 type Tab = "groups" | "roles" | "effective";
 
+const BREAK_GLASS_OID = "local-break-glass";
+
 export default function UserDetailPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const { me } = useMe();
   const canWrite = hasPrivilege(me, "admin.users.write");
   const [user, setUser] = useState<UserDetail | null>(null);
@@ -72,6 +75,26 @@ export default function UserDetailPage() {
     const label = next === "disabled" ? "Disable this account? They will not be able to use the API." : "Re-enable this account?";
     if (!window.confirm(label)) return;
     await patch({ status: next });
+  }
+
+  async function removeUser() {
+    if (!user) return;
+    if (
+      !window.confirm(
+        `Delete ${user.display_name}? This removes them from Looking Glass. Entra accounts can sign in again only after an admin grants access.`
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await api(`/admin/users/${params.id}`, { method: "DELETE" });
+      router.push("/admin/users");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete user");
+      setSaving(false);
+    }
   }
 
   async function saveRoles() {
@@ -140,10 +163,15 @@ export default function UserDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={user.status} />
-          {canWrite && (
-            <button className={user.status === "active" ? "btn-danger" : "btn-primary"} onClick={toggleStatus} disabled={saving}>
-              {user.status === "active" ? "Disable" : "Enable"}
-            </button>
+          {canWrite && user.entra_oid !== BREAK_GLASS_OID && (
+            <>
+              <button className={user.status === "active" ? "btn-danger" : "btn-primary"} onClick={toggleStatus} disabled={saving}>
+                {user.status === "active" ? "Disable" : "Enable"}
+              </button>
+              <button className="btn-danger" onClick={removeUser} disabled={saving}>
+                Delete
+              </button>
+            </>
           )}
         </div>
       </div>

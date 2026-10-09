@@ -1,4 +1,4 @@
-"""Background ingest, recommendations, and Entra directory sync."""
+"""Background ingest, recommendations, DevOps health, and Entra directory sync."""
 
 from __future__ import annotations
 

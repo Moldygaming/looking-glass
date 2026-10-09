@@ -118,6 +118,19 @@ export type DimensionCatalog = {
   default_path: string[];
 };
 
+export type CostFacetValue = {
+  name: string;
+  provider: string;
+  category: string;
+};
+
+export type CostFacets = {
+  providers: string[];
+  categories: string[];
+  resource_types: CostFacetValue[];
+  services: CostFacetValue[];
+};
+
 export type CostSummary = {
   currency: string;
   period_cost: number;
@@ -149,6 +162,8 @@ export type LineItems = {
   }[];
 };
 
+export type TagFilter = { key: string; value: string };
+
 export type Widget = {
   id: string;
   type: "kpi" | "timeseries" | "breakdown" | "table" | "recommendations" | "growth";
@@ -158,8 +173,14 @@ export type Widget = {
   granularity?: Granularity;
   item_keys?: string[];
   provider?: string | null;
+  service?: string | null;
+  resource_type?: string | null;
+  category?: string | null;
+  q?: string | null;
   tag_key?: string | null;
   tag_value?: string | null;
+  tag_filters?: TagFilter[];
+  limit?: number;
 };
 
 export type Dashboard = {
@@ -189,13 +210,133 @@ export type Recommendation = {
 export type Connection = {
   id: string;
   name: string;
-  provider: "azure" | "aws" | "gcp" | string;
+  provider: "azure" | "aws" | "gcp" | "azure_devops" | string;
   status: string;
   config: Record<string, unknown>;
   credentials_configured: boolean;
   last_ingest_at?: string | null;
   last_error?: string | null;
   created_at?: string;
+};
+
+export type DevOpsProject = {
+  id: string;
+  ado_project_id: string;
+  name: string;
+  description: string;
+  url: string;
+  state: string;
+  monitored: boolean;
+  last_scan_at?: string | null;
+};
+
+export type DevOpsPullRequest = {
+  id: string;
+  ado_project_id: string;
+  project_name: string;
+  repo_id: string;
+  repo_name: string;
+  pr_id: number;
+  title: string;
+  created_by: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  source_branch: string;
+  target_branch: string;
+  is_draft: boolean;
+  reviewer_count: number;
+  url: string;
+  age_days?: number | null;
+};
+
+export type DevOpsStaleBranch = {
+  id: string;
+  ado_project_id: string;
+  project_name: string;
+  repo_id: string;
+  repo_name: string;
+  branch_name: string;
+  last_commit_at?: string | null;
+  last_commit_by: string;
+  days_stale: number;
+  url: string;
+};
+
+export type DevOpsPipelineAlert = {
+  id: string;
+  ado_project_id: string;
+  project_name: string;
+  pipeline_id: number;
+  pipeline_name: string;
+  consecutive_failures: number;
+  failure_count: number;
+  run_count: number;
+  failure_rate: number;
+  reason: string;
+  last_result: string;
+  last_run_at?: string | null;
+  last_run_url: string;
+  url: string;
+  recent_results: { id?: number; result?: string; buildNumber?: string; finishTime?: string }[];
+};
+
+export type DevOpsRepoPullRequests = {
+  repo_id: string;
+  repo_name: string;
+  project_name: string;
+  ado_project_id: string;
+  pr_count: number;
+  oldest_age_days?: number | null;
+  url: string;
+  pull_requests: DevOpsPullRequest[];
+};
+
+export type DevOpsRepoStaleBranches = {
+  repo_id: string;
+  repo_name: string;
+  project_name: string;
+  ado_project_id: string;
+  branch_count: number;
+  oldest_days: number;
+  url: string;
+  branches: DevOpsStaleBranch[];
+};
+
+export type DevOpsReport = {
+  connection_id: string;
+  connection_name: string;
+  organization: string;
+  status: string;
+  credentials_configured: boolean;
+  last_scan_at: string | null;
+  last_error: string | null;
+  thresholds: {
+    stale_days: number;
+    pipeline_lookback: number;
+    fail_consecutive: number;
+    fail_rate: number;
+  };
+  summary: {
+    projects: number;
+    monitored: number;
+    repositories_with_pull_requests: number;
+    active_pull_requests: number;
+    repositories_with_stale_branches: number;
+    stale_branches: number;
+    failing_pipelines: number;
+  };
+  projects: DevOpsProject[];
+  repositories_with_pull_requests: DevOpsRepoPullRequests[];
+  repositories_with_stale_branches: DevOpsRepoStaleBranches[];
+  pipeline_alerts: DevOpsPipelineAlert[];
+};
+
+export type DevOpsScan = {
+  connection_id: string;
+  projects: number;
+  pull_requests: number;
+  stale_branches: number;
+  pipeline_alerts: number;
 };
 
 export type GroupMember = {

@@ -6,6 +6,7 @@ import { signOut, useSession } from "next-auth/react";
 import {
   Cloud,
   Gauge,
+  HeartPulse,
   IdCard,
   LayoutDashboard,
   LogOut,
@@ -42,6 +43,7 @@ const sections: { label: string | null; items: NavItem[] }[] = [
     label: "Infrastructure",
     items: [
       { href: "/connections", label: "Connections", icon: Plug, anyOf: ["connections.read"] },
+      { href: "/devops", label: "DevOps health", icon: HeartPulse, anyOf: ["devops.read"] },
       { href: "/entra", label: "Entra", icon: IdCard, anyOf: ["admin.entra.read", "admin.entra.helpdesk"] },
       { href: "/admin", label: "Admin", icon: Shield, admin: true },
     ],
@@ -113,7 +115,17 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <main className="min-w-0 p-4 sm:p-8">
         {error && (
           <div className="panel-pad mb-6 text-rose">
-            {error.includes("disabled") ? "This account has been disabled. Contact a platform administrator." : error}
+            {error.includes("disabled")
+              ? "This account has been disabled. Contact a platform administrator."
+              : error.includes("not provisioned")
+                ? "This identity is not provisioned in Looking Glass. Sign in with Entra ID or ask an administrator to grant access."
+                : error}
+          </div>
+        )}
+        {me && !me.is_admin && !(me.privileges || []).length && (
+          <div className="panel-pad mb-6 text-sm text-mist-300">
+            You are signed in but have not been granted any privileges yet. Ask a platform
+            administrator to assign you a role in Admin → Users.
           </div>
         )}
         {children}

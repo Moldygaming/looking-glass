@@ -503,3 +503,88 @@ class Recommendation(Base):
     tags: Mapped[dict[str, str]] = mapped_column(JSONB, default=dict)
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DevOpsProject(Base):
+    __tablename__ = "devops_projects"
+    __table_args__ = (UniqueConstraint("connection_id", "ado_project_id", name="uq_devops_project"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), index=True
+    )
+    ado_project_id: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    description: Mapped[str] = mapped_column(Text, default="", server_default="")
+    url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+    state: Mapped[str] = mapped_column(String(32), default="wellFormed", server_default="wellFormed")
+    monitored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DevOpsPullRequest(Base):
+    __tablename__ = "devops_pull_requests"
+    __table_args__ = (Index("ix_devops_pr_connection_project", "connection_id", "ado_project_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), index=True
+    )
+    ado_project_id: Mapped[str] = mapped_column(String(64), index=True)
+    project_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    repo_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    repo_name: Mapped[str] = mapped_column(String(256), index=True)
+    pr_id: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(512))
+    created_by: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_branch: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    target_branch: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    is_draft: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    reviewer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+
+
+class DevOpsStaleBranch(Base):
+    __tablename__ = "devops_stale_branches"
+    __table_args__ = (Index("ix_devops_stale_connection_repo", "connection_id", "repo_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), index=True
+    )
+    ado_project_id: Mapped[str] = mapped_column(String(64), index=True)
+    project_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    repo_id: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    repo_name: Mapped[str] = mapped_column(String(256), index=True)
+    branch_name: Mapped[str] = mapped_column(String(256))
+    last_commit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_commit_by: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    days_stale: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+
+
+class DevOpsPipelineAlert(Base):
+    __tablename__ = "devops_pipeline_alerts"
+    __table_args__ = (Index("ix_devops_pipeline_connection", "connection_id", "ado_project_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), index=True
+    )
+    ado_project_id: Mapped[str] = mapped_column(String(64), index=True)
+    project_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    pipeline_id: Mapped[int] = mapped_column(Integer)
+    pipeline_name: Mapped[str] = mapped_column(String(256), index=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    run_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failure_rate: Mapped[float] = mapped_column(Float, default=0, server_default="0")
+    reason: Mapped[str] = mapped_column(String(32), default="consecutive", server_default="consecutive")
+    last_result: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_run_url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+    url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+    recent_results: Mapped[list[Any]] = mapped_column(JSONB, default=list)

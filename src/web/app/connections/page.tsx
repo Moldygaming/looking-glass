@@ -17,6 +17,9 @@ function summary(connection: Connection) {
   if (connection.provider === "aws") {
     return [cfg.account_id && `Account ${cfg.account_id}`, cfg.region].filter(Boolean).join(" · ");
   }
+  if (connection.provider === "azure_devops") {
+    return [cfg.organization && `org ${cfg.organization}`, cfg.organization_url].filter(Boolean).join(" · ");
+  }
   return [cfg.project_id, cfg.billing_table].filter(Boolean).join(" · ");
 }
 
@@ -36,10 +39,10 @@ export default function ConnectionsPage() {
     <Shell>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="font-display text-3xl">Cloud connections</h1>
+          <h1 className="font-display text-3xl">Connections</h1>
           <p className="mt-2 max-w-2xl text-sm text-mist-400">
-            Each connection is one billing organisation. Open a connection to set tenant, credentials, scope and ingest
-            options — dummy names are not enough.
+            Cloud billing organisations and Azure DevOps. Open a connection to set credentials and scope — dummy names
+            are not enough.
           </p>
         </div>
         {canWrite && (
