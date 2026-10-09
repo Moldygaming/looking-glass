@@ -22,7 +22,10 @@ services:
       - "10000:10000"
 
   api:
-    build: ./src/api
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
     environment:
       DATABASE_URL: postgresql+asyncpg://lookingglass:lookingglass@postgres:5432/lookingglass
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
@@ -45,8 +48,10 @@ services:
         condition: service_healthy
 
   worker:
-    build: ./src/api
-    command: python -m app.worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
     environment:
       DATABASE_URL: postgresql+asyncpg://lookingglass:lookingglass@postgres:5432/lookingglass
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
@@ -63,7 +68,10 @@ services:
         condition: service_started
 
   web:
-    build: ./src/web
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
     environment:
       API_URL: http://api:8000
       INTERNAL_API_KEY: ${INTERNAL_API_KEY:-dev-internal-key}
