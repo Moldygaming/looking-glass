@@ -51,6 +51,24 @@ function profileGroups(profile: EntraProfile): string[] {
   return [];
 }
 
+const UPSTREAM_TIMEOUT_MS = 15_000;
+
+function loginError(code: string, reason: string): string {
+  const params = new URLSearchParams({ error: code });
+  if (reason) params.set("reason", reason.slice(0, 300));
+  return `/login?${params.toString()}`;
+}
+
+async function responseDetail(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { detail?: unknown };
+    if (typeof body.detail === "string") return body.detail;
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 async function resolveGroups(profile: EntraProfile, accessToken?: string): Promise<string[]> {
   const groups = profileGroups(profile);
   const overage = Boolean(profile._claim_names?.groups);
@@ -66,6 +84,7 @@ async function resolveGroups(profile: EntraProfile, accessToken?: string): Promi
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ groupIds: wanted }),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
     if (!res.ok) return groups;
     const data = (await res.json()) as { value?: string[] };
@@ -81,16 +100,34 @@ async function evaluateSso(payload: {
   display_name: string;
   groups: string[];
   roles: string[];
-}): Promise<boolean> {
-  const res = await fetch(`${process.env.API_URL || "http://localhost:8000"}/auth/sso`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "X-Internal-Key": process.env.INTERNAL_API_KEY || "",
-    },
-    body: JSON.stringify(payload),
-  });
-  return res.ok;
+}): Promise<true | string> {
+  const base = process.env.API_URL || "http://127.0.0.1:8000";
+  let res: Response;
+  try {
+    res = await fetch(`${base}/auth/sso`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Internal-Key": process.env.INTERNAL_API_KEY || "",
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    });
+  } catch (error) {
+    console.error("Looking Glass SSO check failed. The web container could not reach", base, error);
+    return loginError(
+      "Callback",
+      "The web container could not reach the API. Check API_URL from the web container."
+    );
+  }
+  if (res.ok) return true;
+  const detail = await responseDetail(res);
+  console.error("Looking Glass SSO rejected the sign-in", res.status, detail);
+  if (res.status === 403 && detail) return loginError("AccessDenied", detail);
+  return loginError(
+    "Callback",
+    detail || `The API rejected sign-in (${res.status}). Check API_URL and INTERNAL_API_KEY.`
+  );
 }
 
 const providers = [
@@ -101,6 +138,16 @@ const providers = [
           clientSecret: process.env.AUTH_MICROSOFT_ENTRA_ID_SECRET!,
           issuer: `https://login.microsoftonline.com/${process.env.AUTH_MICROSOFT_ENTRA_ID_TENANT_ID}/v2.0`,
           authorization: { params: { scope: "openid profile email User.Read" } },
+          // The built-in profile downloads a Graph photo with no timeout and can hold
+          // the callback open. Sign-in only needs the id-token claims.
+          profile(profile) {
+            const record = profile as EntraProfile;
+            return {
+              id: String(record.oid || record.sub || ""),
+              name: record.name,
+              email: record.preferred_username || record.email,
+            };
+          },
         }),
       ]
     : []),
@@ -152,13 +199,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         groups,
         roles,
       });
-      if (ok) {
-        const next = user as { oid?: string; roles?: string[]; groups?: string[] };
-        next.oid = oid;
-        next.groups = groups;
-        next.roles = roles;
-      }
-      return ok;
+      if (ok !== true) return ok;
+      const next = user as { oid?: string; roles?: string[]; groups?: string[] };
+      next.oid = oid;
+      next.groups = groups;
+      next.roles = roles;
+      return true;
     },
     async jwt({ token, user, profile, account }) {
       if (user) {
@@ -177,7 +223,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.oid = p.oid || p.sub || token.oid;
         token.roles = Array.isArray(p.roles) ? p.roles : token.roles || [];
         if (Array.isArray(p.groups) && p.groups.length) {
-          token.groups = p.groups.map(String);
+          const current = Array.isArray(token.groups) ? token.groups.map(String) : [];
+          token.groups = Array.from(new Set([...current, ...p.groups.map(String)]));
         }
       }
       return token;

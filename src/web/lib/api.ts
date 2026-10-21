@@ -21,7 +21,17 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     Object.assign(headers, init.headers as Record<string, string>);
   }
 
-  const res = await fetch(url, { ...init, headers, cache: "no-store" });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers,
+      cache: "no-store",
+      signal: init?.signal ?? AbortSignal.timeout(70_000),
+    });
+  } catch {
+    throw new Error("The portal API did not respond. Check that the web container can reach API_URL.");
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(_errorMessage(text, res.status, res.statusText));

@@ -654,17 +654,26 @@ async def _migrate_user_privileges(session: AsyncSession) -> None:
         session.add(UserRole(user_id=user.id, role_id=role.id))
 
 
+_BUNDLE_EXTRAS = frozenset({"devops.read", "service.read"})
+
+
 async def _ensure_demo_devops_read(session: AsyncSession) -> None:
-    """Grant devops.read to roles that already hold the original FinOps bundle."""
-    cost_bundle = set(DEMO_COST_KEYS) - {"devops.read"}
+    """Grant newer read privileges to roles that already hold the original FinOps bundle.
+
+    Roles that already received devops.read still need service.read. Skipping the
+    whole role when any extra key is present would leave them without it.
+    """
+    cost_bundle = set(DEMO_COST_KEYS) - _BUNDLE_EXTRAS
     roles = (
         await session.execute(select(AccessRole).options(selectinload(AccessRole.privilege_grants)))
     ).scalars().all()
     for role in roles:
         keys = {row.privilege_key for row in role.privilege_grants}
-        if "devops.read" in keys or not cost_bundle.issubset(keys):
+        missing = _BUNDLE_EXTRAS - keys
+        if not missing or not cost_bundle.issubset(keys):
             continue
-        session.add(RolePrivilege(role_id=role.id, privilege_key="devops.read"))
+        for key in sorted(missing):
+            session.add(RolePrivilege(role_id=role.id, privilege_key=key))
 
 
 async def _strip_unknown_role_privileges(session: AsyncSession) -> None:

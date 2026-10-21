@@ -1,6 +1,6 @@
 import unittest
 
-from app.identity import evaluate_sso, group_ids_match, role_match
+from app.identity import coalesce_login_groups, evaluate_sso, group_ids_match, role_match
 
 
 class EvaluateSsoTests(unittest.TestCase):
@@ -98,6 +98,19 @@ class ClaimMatchTests(unittest.TestCase):
     def test_role_match(self):
         self.assertTrue(role_match("PlatformAdmin", ["platformadmin"]))
         self.assertFalse(role_match("PlatformAdmin", ["User"]))
+
+    def test_token_groups_win_and_keep_sync(self):
+        self.assertEqual(
+            coalesce_login_groups(["group-a"], ["group-b"], ["stale"]),
+            ["group-a", "group-b"],
+        )
+
+    def test_empty_token_keeps_synced_and_stored_groups(self):
+        self.assertEqual(
+            coalesce_login_groups([], ["group-b"], ["stored"]),
+            ["group-b", "stored"],
+        )
+        self.assertEqual(coalesce_login_groups(["  "], [], ["stored"]), ["stored"])
 
 
 if __name__ == "__main__":

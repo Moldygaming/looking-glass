@@ -124,6 +124,18 @@ CATALOG: tuple[Privilege, ...] = (
         "Manage DevOps health",
         "Connect Azure DevOps organisations, choose projects to monitor, and run health checks.",
     ),
+    Privilege(
+        "service.read",
+        "Service",
+        "View service work",
+        "Open the service work list: Azure DevOps work items, and Freshservice tickets, problems, and changes.",
+    ),
+    Privilege(
+        "service.write",
+        "Service",
+        "Manage service work",
+        "Choose the Azure DevOps project for the work list and sync service records.",
+    ),
 )
 
 BY_KEY = {item.key: item for item in CATALOG}
@@ -139,6 +151,7 @@ DEMO_COST_KEYS = (
     "finops.dashboards.write",
     "connections.read",
     "devops.read",
+    "service.read",
 )
 
 

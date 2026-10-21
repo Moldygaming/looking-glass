@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { Connection } from "@/lib/types";
 
-type Provider = "azure" | "aws" | "gcp" | "azure_devops";
+type Provider = "azure" | "aws" | "gcp" | "azure_devops" | "freshservice";
 type TagRow = { key: string; value: string };
 
 const providers: { id: Provider; title: string; body: string }[] = [
@@ -15,7 +15,12 @@ const providers: { id: Provider; title: string; body: string }[] = [
   {
     id: "azure_devops",
     title: "Azure DevOps",
-    body: "Organisation + PAT. Choose projects to monitor for pull requests, stale branches and failing pipelines.",
+    body: "Organisation + PAT. Health checks watch pull requests, stale branches and failing pipelines. Service work uses one project.",
+  },
+  {
+    id: "freshservice",
+    title: "Freshservice",
+    body: "Domain and API key. Sync tickets, problems, and changes into the service work list.",
   },
 ];
 
@@ -102,6 +107,8 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
   const [failRate, setFailRate] = useState(
     Number.isFinite(failRateRaw) && failRateRaw > 0 ? (failRateRaw > 1 ? failRateRaw : Math.round(failRateRaw * 100)) : 75
   );
+  const [domain, setDomain] = useState(str(initial, "domain"));
+  const [apiKey, setApiKey] = useState("");
 
   const azureScope = useMemo(
     () => buildScope(scopeKind, scopeValue, scopeCustom),
@@ -139,6 +146,8 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
     }
     if (provider === "azure_devops") {
       const monitored = existing?.config?.monitored_project_ids;
+      const serviceProjectId = existing?.config?.service_project_id;
+      const serviceProjectName = existing?.config?.service_project_name;
       return {
         name,
         provider,
@@ -150,8 +159,18 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
           fail_consecutive: failConsecutive,
           fail_rate: failRate / 100,
           monitored_project_ids: Array.isArray(monitored) ? monitored : [],
+          ...(typeof serviceProjectId === "string" ? { service_project_id: serviceProjectId } : {}),
+          ...(typeof serviceProjectName === "string" ? { service_project_name: serviceProjectName } : {}),
         },
         secrets: { pat },
+      };
+    }
+    if (provider === "freshservice") {
+      return {
+        name,
+        provider,
+        config: { domain: domain.trim() },
+        secrets: { api_key: apiKey },
       };
     }
     return {
@@ -219,7 +238,9 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
       setMessage(
         result.kind === "devops"
           ? `Health check finished. ${result.written} findings written.`
-          : `Ingest finished. ${result.written} cost rows written.`
+          : result.kind === "service"
+            ? `Sync finished. ${result.written} work records written.`
+            : `Ingest finished. ${result.written} cost rows written.`
       );
       setLastError(null);
     } catch (err) {
@@ -234,8 +255,10 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
       !existing ||
       !confirm(
         provider === "azure_devops"
-          ? "Delete this Azure DevOps connection? Health snapshots will be removed."
-          : "Delete this cloud connection? Its ingested cost rows will be removed."
+          ? "Delete this Azure DevOps connection? Health snapshots and synced work items will be removed."
+          : provider === "freshservice"
+            ? "Delete this Freshservice connection? Synced tickets, problems, and changes will be removed."
+            : "Delete this cloud connection? Its ingested cost rows will be removed."
       )
     )
       return;
@@ -251,7 +274,7 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
 
   if (!provider) {
     return (
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {providers.map((p) => (
           <button key={p.id} className="panel-pad text-left hover:border-glass/40" onClick={() => setProvider(p.id)}>
             <div className="text-xs uppercase tracking-[0.16em] text-glass">{p.id}</div>
@@ -382,9 +405,10 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
           <h2 className="font-display text-xl">Azure DevOps organisation</h2>
           <p className="text-sm text-mist-400">
             Create a PAT with <span className="text-mist-100">Code (Read)</span>,{" "}
-            <span className="text-mist-100">Build (Read)</span> and{" "}
-            <span className="text-mist-100">Project and team (Read)</span>. After saving, open DevOps health to choose
-            which projects to monitor.
+            <span className="text-mist-100">Build (Read)</span>,{" "}
+            <span className="text-mist-100">Project and team (Read)</span>, and{" "}
+            <span className="text-mist-100">Work Items (Read)</span>. Health checks use the first three. The service
+            work list uses Work Items.
           </p>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
@@ -462,9 +486,13 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
           </div>
           {existing && (
             <p className="hint">
-              Project selection and the health report live on{" "}
+              Choose projects to monitor on{" "}
               <a className="text-glass hover:underline" href="/devops">
                 DevOps health
+              </a>
+              . Choose the one project whose work items appear on{" "}
+              <a className="text-glass hover:underline" href="/service">
+                Service
               </a>
               .
             </p>
@@ -500,7 +528,46 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
         </section>
       )}
 
-      {provider !== "azure_devops" && (
+      {provider === "freshservice" && (
+        <section className="panel-pad space-y-4">
+          <h2 className="font-display text-xl">Freshservice</h2>
+          <p className="text-sm text-mist-400">
+            Use the account domain and an API key. Sync pulls tickets, problems, and changes into the service work list.
+          </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="label">Domain</label>
+              <input
+                className="input font-mono"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                placeholder="acme or acme.freshservice.com"
+              />
+            </div>
+            <div>
+              <label className="label">API key</label>
+              <input
+                className="input font-mono"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={existing?.credentials_configured ? "Leave blank to keep the current key" : "Paste an API key"}
+              />
+            </div>
+          </div>
+          {existing && (
+            <p className="hint">
+              Open{" "}
+              <a className="text-glass hover:underline" href="/service">
+                Service
+              </a>{" "}
+              to see tickets, problems, and changes next to Azure DevOps work items.
+            </p>
+          )}
+        </section>
+      )}
+
+      {provider !== "azure_devops" && provider !== "freshservice" && (
       <section className="panel-pad space-y-4">
         <h2 className="font-display text-xl">Ingest options</h2>
         <div className="grid gap-4 md:grid-cols-2">
@@ -560,10 +627,14 @@ export function ConnectionForm({ existing }: { existing?: Connection }) {
               {busy === "ingest"
                 ? provider === "azure_devops"
                   ? "Checking…"
-                  : "Ingesting…"
+                  : provider === "freshservice"
+                    ? "Syncing…"
+                    : "Ingesting…"
                 : provider === "azure_devops"
                   ? "Run health check"
-                  : "Run ingest"}
+                  : provider === "freshservice"
+                    ? "Sync work"
+                    : "Run ingest"}
             </button>
             <button className="btn-danger ml-auto" onClick={remove} disabled={Boolean(busy)}>
               Delete

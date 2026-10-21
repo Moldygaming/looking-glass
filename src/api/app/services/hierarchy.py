@@ -9,7 +9,7 @@ from app.models import Connection, CostLineItem
 
 def classify_category(service: str, resource_type: str = "") -> str:
     text = f"{service} {resource_type}".lower()
-    if any(k in text for k in ("virtual machine", "compute", "aks", "kubernetes", "eks", "gke", "ec2", "ecs", "lambda", "app service", "functions", "cloud run", "container")):
+    if any(k in text for k in ("virtual machine", "compute", "aks", "kubernetes", "eks", "gke", "ec2", "ecs", "lambda", "app service", "microsoft.web", "serverfarm", "functions", "cloud run", "container")):
         return "Compute"
     if any(k in text for k in ("storage", "blob", "disk", "ebs", "s3", "filestore", "backup", "glacier")):
         return "Storage"

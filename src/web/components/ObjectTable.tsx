@@ -78,7 +78,12 @@ export function ObjectTable({
                 </td>
                 <td>
                   {row.kind === "resource" || row.kind === "category" || row.kind === "service" ? (
-                    <CategoryBadge category={row.category} service={row.service} />
+                    <div className="flex flex-col items-start gap-1">
+                      <CategoryBadge category={row.category} service={row.service} />
+                      {row.kind === "resource" && row.resource_type && (
+                        <span className="text-xs text-mist-400">{row.resource_type}</span>
+                      )}
+                    </div>
                   ) : (
                     <span className="text-mist-500">—</span>
                   )}

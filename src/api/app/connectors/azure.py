@@ -1,13 +1,15 @@
 """Azure Cost Management connector.
 
-Auth is a token against management.azure.com. Ingest uses the Cost Management
-Query API, which allows at most two grouping dimensions. Management-group
-scopes are expanded to subscriptions when the identity can list them.
+Auth is a token against management.azure.com. Ingest prefers the cost-details
+report, which includes every resource type on the bill. The Query API is the
+fallback: it allows two groupings, and a ResourceId grouping omits charges
+that have no resource. Management-group scopes expand to subscriptions.
 """
 
 from __future__ import annotations
 
 import asyncio
+import gzip
 import logging
 from datetime import date, timedelta
 from typing import Any
@@ -17,15 +19,24 @@ import httpx
 from azure.identity import ClientSecretCredential, DefaultAzureCredential
 
 from app.connectors.base import Connector, NormalizedCost
+from app.services.azure_resources import (
+    costs_from_details_csv,
+    month_windows,
+    normalized_from_query_item,
+    reconcile_unallocated,
+)
 
 log = logging.getLogger("looking-glass.azure")
 QUERY_API = "2023-11-01"
 SUB_API = "2022-12-01"
 MG_API = "2020-05-01"
-QUERIES = [
-    ("Cost", [{"type": "Dimension", "name": "ResourceId"}, {"type": "Dimension", "name": "MeterCategory"}]),
+RESOURCE_GROUPINGS = [
+    ("Cost", [{"type": "Dimension", "name": "ResourceId"}, {"type": "Dimension", "name": "ServiceName"}]),
     ("PreTaxCost", [{"type": "Dimension", "name": "ResourceId"}, {"type": "Dimension", "name": "MeterCategory"}]),
-    ("Cost", [{"type": "Dimension", "name": "ServiceName"}, {"type": "Dimension", "name": "ResourceLocation"}]),
+    ("Cost", [{"type": "Dimension", "name": "ResourceId"}]),
+]
+SERVICE_GROUPINGS = [
+    ("Cost", [{"type": "Dimension", "name": "ServiceName"}]),
     ("PreTaxCost", [{"type": "Dimension", "name": "ServiceName"}]),
 ]
 
@@ -135,6 +146,13 @@ async def _query_scopes(client: httpx.AsyncClient, headers: dict[str, str], scop
     return [scope]
 
 
+def _cost_details_scope(scope: str) -> bool:
+    lowered = scope.lower()
+    if "/resourcegroups/" in lowered or "managementgroups" in lowered:
+        return False
+    return "/subscriptions/" in lowered or "billingaccounts" in lowered
+
+
 async def _query_scope(
     client: httpx.AsyncClient,
     headers: dict[str, str],
@@ -144,14 +162,59 @@ async def _query_scope(
     default_tags: dict[str, str],
     currency: str,
 ) -> list[NormalizedCost]:
+    if _cost_details_scope(scope):
+        try:
+            detailed = await _cost_details(client, headers, scope, start, end, default_tags, currency)
+            if detailed:
+                log.info("Azure cost details %s rows=%s", scope, len(detailed))
+                return detailed
+        except AzureIngestError as exc:
+            message = str(exc)
+            log.warning("Azure cost details unavailable for %s: %s", scope, message)
+            if "429" in message:
+                raise
+    return await _query_api_scope(client, headers, scope, start, end, default_tags, currency)
+
+
+async def _query_api_scope(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    scope: str,
+    start: date,
+    end: date,
+    default_tags: dict[str, str],
+    currency: str,
+) -> list[NormalizedCost]:
+    resource_rows, resource_error = await _first_grouping(
+        client, headers, scope, start, end, default_tags, currency, RESOURCE_GROUPINGS
+    )
+    service_rows, service_error = await _first_grouping(
+        client, headers, scope, start, end, default_tags, currency, SERVICE_GROUPINGS
+    )
+    if resource_rows is None and service_rows is None:
+        raise AzureIngestError(resource_error or service_error or "No Cost Management query grouping succeeded.")
+    return reconcile_unallocated(resource_rows or [], service_rows or [], scope)
+
+
+async def _first_grouping(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    scope: str,
+    start: date,
+    end: date,
+    default_tags: dict[str, str],
+    currency: str,
+    groupings: list[tuple[str, list[dict[str, str]]]],
+) -> tuple[list[NormalizedCost] | None, str]:
     last_error = "No Cost Management query grouping succeeded."
-    for cost_column, grouping in QUERIES:
+    for cost_column, grouping in groupings:
         try:
             raw_rows, columns = await _run_query(client, headers, scope, start, end, grouping, cost_column)
-            return [
-                _to_cost(item, scope, default_tags, currency, cost_column)
+            rows = [
+                normalized_from_query_item(item, scope, default_tags, currency, cost_column)
                 for item in (_row_dict(columns, raw) for raw in raw_rows)
             ]
+            return rows, ""
         except AzureIngestError as exc:
             last_error = str(exc)
             lowered = last_error.lower()
@@ -160,7 +223,102 @@ async def _query_scope(
             if any(token in lowered for token in ("group", "dimension", "column", "aggregat", "invalid", "badrequest", "400")):
                 continue
             raise
-    raise AzureIngestError(last_error)
+    return None, last_error
+
+
+async def _cost_details(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    scope: str,
+    start: date,
+    end: date,
+    default_tags: dict[str, str],
+    currency: str,
+) -> list[NormalizedCost]:
+    rows: list[NormalizedCost] = []
+    for window_start, window_end in month_windows(start, end):
+        rows.extend(
+            await _cost_details_window(client, headers, scope, window_start, window_end, default_tags, currency)
+        )
+    return rows
+
+
+async def _cost_details_window(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+    scope: str,
+    start: date,
+    end: date,
+    default_tags: dict[str, str],
+    currency: str,
+) -> list[NormalizedCost]:
+    url = f"https://management.azure.com{scope}/providers/Microsoft.CostManagement/generateCostDetailsReport"
+    payload = {
+        "metric": "ActualCost",
+        "timePeriod": {"start": start.isoformat(), "end": end.isoformat()},
+    }
+    response = await _request(client, "POST", url, headers, params={"api-version": QUERY_API}, json_body=payload)
+    if response.status_code == 204:
+        return []
+    data = response.json() if response.status_code == 200 else await _poll_cost_details(client, headers, response)
+    status = _cost_details_status(data)
+    if status == "nodatafound":
+        return []
+    if status == "failed":
+        error = data.get("error") or {}
+        raise AzureIngestError(str(error.get("message") or "Cost details report failed."))
+    rows: list[NormalizedCost] = []
+    for blob in _cost_details_blobs(data):
+        link = str(blob.get("blobLink") or "")
+        if not link:
+            continue
+        text = await _download_report(client, link)
+        rows.extend(costs_from_details_csv(text, scope, default_tags, currency))
+    return rows
+
+
+def _cost_details_status(data: dict[str, Any]) -> str:
+    status = data.get("status") or (data.get("properties") or {}).get("status") or ""
+    return str(status).lower()
+
+
+def _cost_details_blobs(data: dict[str, Any]) -> list[dict[str, Any]]:
+    manifest = data.get("manifest") or (data.get("properties") or {}).get("manifest") or {}
+    return list(manifest.get("blobs") or [])
+
+
+async def _poll_cost_details(
+    client: httpx.AsyncClient, headers: dict[str, str], response: httpx.Response
+) -> dict[str, Any]:
+    location = response.headers.get("Location") or response.headers.get("location") or ""
+    if not location:
+        raise AzureIngestError("Cost details report was accepted without a status URL.")
+    if location.startswith("/"):
+        location = "https://management.azure.com" + location
+    for _ in range(15):
+        wait = int(response.headers.get("Retry-After") or response.headers.get("retry-after") or 5)
+        await asyncio.sleep(min(max(wait, 2), 8))
+        response = await _request(client, "GET", location, headers, allow_error=True)
+        if response.status_code == 202:
+            continue
+        if response.status_code == 200:
+            data = response.json() if response.content else {}
+            status = _cost_details_status(data)
+            if status in {"completed", "nodatafound", "failed", ""}:
+                return data
+            continue
+        raise AzureIngestError(_azure_message(response))
+    raise AzureIngestError("Cost details report did not finish in time.")
+
+
+async def _download_report(client: httpx.AsyncClient, link: str) -> str:
+    response = await client.get(link, timeout=120)
+    if not response.is_success:
+        raise AzureIngestError(f"Azure cost details download failed ({response.status_code}).")
+    raw = response.content
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return raw.decode("utf-8-sig")
 
 
 async def _run_query(
@@ -187,16 +345,22 @@ async def _run_query(
     columns: list[str] = []
     next_url: str | None = url
     body: dict[str, Any] | None = payload
-    params: dict[str, str] | None = {"api-version": QUERY_API}
-    while next_url:
+    params: dict[str, str] | None = {"api-version": QUERY_API, "$top": "5000"}
+    seen: set[str] = set()
+    for _ in range(40):
+        if not next_url or next_url in seen:
+            break
+        seen.add(next_url)
         response = await _request(client, "POST", next_url, headers, params=params, json_body=body)
         if response.status_code == 204:
-            return [], []
+            return rows, columns
         data = response.json() if response.content else {}
         props = data.get("properties") or data
         columns = [c.get("name") for c in props.get("columns", []) if c.get("name")]
         rows.extend(props.get("rows") or [])
         next_url = props.get("nextLink")
+        if next_url and str(next_url).startswith("/"):
+            next_url = "https://management.azure.com" + str(next_url)
         body = payload if next_url else None
         params = None
     return rows, columns
@@ -241,89 +405,3 @@ def _azure_message(response: httpx.Response) -> str:
 
 def _row_dict(columns: list[str], raw: list[Any]) -> dict[str, Any]:
     return dict(zip(columns, raw, strict=False))
-
-
-def _to_cost(item: dict[str, Any], scope: str, default_tags: dict[str, str], currency: str, cost_column: str) -> NormalizedCost:
-    resource_id = str(item.get("ResourceId") or "")
-    name, resource_type, subscription_id, resource_group = _parse_resource(resource_id)
-    account_id = str(item.get("SubscriptionId") or subscription_id or _subscription_from_scope(scope) or "")
-    account_name = str(item.get("SubscriptionName") or account_id)
-    service = str(item.get("MeterCategory") or item.get("ServiceName") or resource_type or "Other")
-    meter = str(item.get("Meter") or item.get("MeterCategory") or service)
-    cost = float(item.get(cost_column) or item.get("Cost") or item.get("PreTaxCost") or 0)
-    return NormalizedCost(
-        usage_date=_parse_usage_date(item.get("UsageDate") or item.get("Date"), date.today()),
-        account_id=account_id,
-        account_name=account_name,
-        resource_group=resource_group,
-        resource_id=resource_id or f"{scope}/{service}",
-        resource_name=name or service,
-        resource_type=resource_type or service,
-        service=service,
-        category=_category(service),
-        meter=meter,
-        region=str(item.get("ResourceLocation") or ""),
-        tags=default_tags,
-        cost=cost,
-        amortized_cost=cost,
-        currency=str(item.get("Currency") or currency),
-        usage_quantity=float(item.get("UsageQuantity") or 0),
-        usage_unit="",
-    )
-
-
-def _parse_resource(resource_id: str) -> tuple[str, str, str, str]:
-    if not resource_id:
-        return "", "", "", ""
-    parts = [p for p in resource_id.split("/") if p]
-    name = parts[-1] if parts else resource_id
-    resource_type = ""
-    subscription_id = ""
-    resource_group = ""
-    lowered = [p.lower() for p in parts]
-    if "providers" in lowered:
-        i = lowered.index("providers")
-        resource_type = "/".join(parts[i + 1 : i + 3]) if i + 2 < len(parts) else ""
-    if "subscriptions" in lowered:
-        i = lowered.index("subscriptions")
-        if i + 1 < len(parts):
-            subscription_id = parts[i + 1]
-    if "resourcegroups" in lowered:
-        i = lowered.index("resourcegroups")
-        if i + 1 < len(parts):
-            resource_group = parts[i + 1]
-    return name, resource_type, subscription_id, resource_group
-
-
-def _subscription_from_scope(scope: str) -> str:
-    parts = scope.split("/")
-    if "subscriptions" in parts:
-        i = parts.index("subscriptions")
-        if i + 1 < len(parts):
-            return parts[i + 1]
-    return ""
-
-
-def _parse_usage_date(value: Any, fallback: date) -> date:
-    if value is None:
-        return fallback
-    text = str(int(value)) if isinstance(value, float) else str(value)
-    if len(text) == 8 and text.isdigit():
-        return date(int(text[0:4]), int(text[4:6]), int(text[6:8]))
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return fallback
-
-
-def _category(service: str) -> str:
-    lowered = service.lower()
-    if any(k in lowered for k in ("virtual machine", "compute", "aks", "kubernetes", "functions", "app service")):
-        return "Compute"
-    if any(k in lowered for k in ("storage", "blob", "disk")):
-        return "Storage"
-    if any(k in lowered for k in ("sql", "cosmos", "database", "cache")):
-        return "Database"
-    if any(k in lowered for k in ("bandwidth", "network", "vnet", "gateway", "load balancer")):
-        return "Network"
-    return "Other"

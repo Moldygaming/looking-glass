@@ -10,6 +10,7 @@ from sqlalchemy import String, cast, func, or_
 from sqlalchemy.sql import ColumnElement
 
 from app.models import CostLineItem
+from app.services.azure_resources import friendly_resource_type
 from app.services.hierarchy import classify_category
 
 NONE_LABEL = "(none)"
@@ -215,6 +216,8 @@ def display_label(kind: str, value: str, raw_label: str | None = None) -> str:
         return NONE_LABEL
     if kind == "provider":
         return {"azure": "Azure", "aws": "AWS", "gcp": "GCP"}.get(text.lower(), text)
+    if kind == "resource_type":
+        return friendly_resource_type(text) or NONE_LABEL
     return text
 
 

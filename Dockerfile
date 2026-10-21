@@ -51,8 +51,9 @@ FROM node:22-alpine AS web-builder
 WORKDIR /app
 COPY --from=web-deps /app/node_modules ./node_modules
 COPY src/web/ ./
-ENV NEXT_TELEMETRY_DISABLED=1 \
-    AUTH_SECRET=build-placeholder-secret-not-used
+# Leave AUTH_SECRET unset. Next inlines it into the edge bundle at build time,
+# so a placeholder here will not match the runtime secret used to sign the session.
+ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 FROM node:22-alpine AS web

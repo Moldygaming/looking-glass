@@ -4,6 +4,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CostLineItem, Recommendation
+from app.services.azure_resources import friendly_resource_type
 
 IDLE_TYPES = {"Virtual Machine", "EC2 Instance", "Compute Engine VM"}
 DISK_TYPES = {"Managed Disk", "EBS Volume", "Persistent Disk"}
@@ -45,7 +46,8 @@ async def refresh_recommendations(session: AsyncSession) -> int:
     for r in rows.all():
         monthly = float(r.cost) * (30 / max(r.days, 1))
         tags = r.tags or {}
-        if r.resource_type in DISK_TYPES and "attached_to" not in tags:
+        resource_type = friendly_resource_type(r.resource_type)
+        if resource_type in DISK_TYPES and "attached_to" not in tags:
             found.append(
                 _rec(
                     r,
@@ -56,7 +58,7 @@ async def refresh_recommendations(session: AsyncSession) -> int:
                     {"days": r.days, "period_cost": r.cost},
                 )
             )
-        if r.resource_type in IDLE_TYPES and float(r.usage or 0) < 2:
+        if resource_type in IDLE_TYPES and float(r.usage or 0) < 2:
             found.append(
                 _rec(
                     r,
@@ -67,7 +69,7 @@ async def refresh_recommendations(session: AsyncSession) -> int:
                     {"usage": r.usage, "period_cost": r.cost},
                 )
             )
-        if r.resource_type in IP_TYPES and "attached_to" not in tags:
+        if resource_type in IP_TYPES and "attached_to" not in tags:
             found.append(
                 _rec(
                     r,
@@ -89,7 +91,7 @@ async def refresh_recommendations(session: AsyncSession) -> int:
                     {"period_cost": r.cost},
                 )
             )
-        if r.resource_type in IDLE_TYPES and 2 <= float(r.usage or 0) < 20:
+        if resource_type in IDLE_TYPES and 2 <= float(r.usage or 0) < 20:
             found.append(
                 _rec(
                     r,

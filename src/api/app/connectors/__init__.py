@@ -1,3 +1,5 @@
-from app.connectors.registry import run_connection_ingest
+"""Cloud connectors.
 
-__all__ = ["run_connection_ingest"]
+Import submodules directly. Importing the registry from here cycles back
+through the Azure connector while app.services.azure_resources is still loading.
+"""

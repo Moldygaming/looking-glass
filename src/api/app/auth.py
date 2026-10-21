@@ -14,12 +14,20 @@ from app.models import (
     AccessGroupMember,
     AccessGroupScope,
     AccessRole,
+    EntraGroup,
+    EntraMembership,
     GroupRole,
     RolePrivilege,
     User,
     UserRole,
 )
-from app.identity import BREAK_GLASS_OID, evaluate_sso, group_ids_match, role_match
+from app.identity import (
+    BREAK_GLASS_OID,
+    coalesce_login_groups,
+    evaluate_sso,
+    group_ids_match,
+    role_match,
+)
 from app.privileges import PLATFORM_ADMIN_KEY, PLATFORM_ADMIN_ROLE_NAME
 from app.schemas import CurrentUser, GroupRef, RoleRef, ScopeOut, SsoIn, SsoOut
 
@@ -326,13 +334,24 @@ def _is_entra_admin(roles: list[str], groups: list[str]) -> bool:
     )
 
 
+async def _synced_group_ids(session: AsyncSession, oid: str) -> list[str]:
+    if not oid:
+        return []
+    rows = await session.execute(
+        select(EntraGroup.entra_id)
+        .join(EntraMembership, EntraMembership.group_id == EntraGroup.id)
+        .where(EntraMembership.entra_user_id == oid)
+    )
+    return [row[0] for row in rows.all() if row[0]]
+
+
 async def accept_sso(session: AsyncSession, body: SsoIn) -> SsoOut:
     oid = (body.oid or "").strip()
     if not oid:
         raise HTTPException(status_code=400, detail="Missing Entra object ID")
     if oid == BREAK_GLASS_OID:
         raise HTTPException(status_code=400, detail="Invalid Entra object ID")
-    groups = [item.strip() for item in body.groups if item and item.strip()]
+    token_groups = [item.strip() for item in body.groups if item and item.strip()]
     roles = [item.strip() for item in body.roles if item and item.strip()]
     email = (body.email or "").strip()
     name = (body.display_name or "").strip() or email or oid
@@ -346,6 +365,9 @@ async def accept_sso(session: AsyncSession, body: SsoIn) -> SsoOut:
             user = None
         elif user:
             user.entra_oid = oid
+
+    stored_groups = list(user.entra_group_ids or []) if user is not None else []
+    groups = coalesce_login_groups(token_groups, await _synced_group_ids(session, oid), stored_groups)
 
     if user is None:
         user = User(

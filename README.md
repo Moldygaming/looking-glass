@@ -383,7 +383,7 @@ Each **connection** is one cloud organisation. Configure it under **Connections*
 
 - Tenant ID, app (client) ID, client secret.
 - Scope: subscription, management group or billing account.
-- Ingest uses Cost Management Query (`Microsoft.CostManagement/query`). Groupings stay within the API limit of two. Management groups expand to subscriptions. 429s are retried.
+- Ingest prefers the cost-details report so every billed resource type is included, not only rows that have a resource id. The Query API is the fallback (two groupings). Management groups expand to subscriptions. 429s are retried.
 - The principal needs Cost Management read on that scope.
 
 ### AWS

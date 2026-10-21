@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { KpiCard } from "@/components/KpiCard";
@@ -15,6 +16,8 @@ function pct(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+const PROJECTS_STORE = "lg.devops.projects.collapsed";
+
 export default function DevOpsHealthPage() {
   const { me } = useMe();
   const canWrite = hasPrivilege(me, "devops.write", "connections.write");
@@ -23,6 +26,8 @@ export default function DevOpsHealthPage() {
   const [report, setReport] = useState<DevOpsReport | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [projectFilter, setProjectFilter] = useState<string>("all");
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [projectQuery, setProjectQuery] = useState("");
   const [busy, setBusy] = useState<"load" | "save" | "refresh" | "scan" | null>("load");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -39,6 +44,10 @@ export default function DevOpsHealthPage() {
     setSelected(data.projects.filter((row) => row.monitored).map((row) => row.ado_project_id));
     setError(data.last_error ?? null);
     return data;
+  }, []);
+
+  useEffect(() => {
+    if (window.localStorage.getItem(PROJECTS_STORE) === "1") setProjectsOpen(false);
   }, []);
 
   useEffect(() => {
@@ -162,6 +171,31 @@ export default function DevOpsHealthPage() {
     return rows.filter((row) => row.ado_project_id === projectFilter);
   }, [report, projectFilter]);
 
+  const visibleProjects = useMemo(() => {
+    const rows = report?.projects || [];
+    const needle = projectQuery.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((row) => `${row.name} ${row.description || ""} ${row.state || ""}`.toLowerCase().includes(needle));
+  }, [report, projectQuery]);
+
+  function toggleProjects() {
+    setProjectsOpen((open) => {
+      const next = !open;
+      window.localStorage.setItem(PROJECTS_STORE, next ? "0" : "1");
+      return next;
+    });
+  }
+
+  function selectShown() {
+    const ids = visibleProjects.map((row) => row.ado_project_id);
+    setSelected((current) => Array.from(new Set([...current, ...ids])));
+  }
+
+  function clearShown() {
+    const hide = new Set(visibleProjects.map((row) => row.ado_project_id));
+    setSelected((current) => current.filter((id) => !hide.has(id)));
+  }
+
   const dirty = useMemo(() => {
     const current = new Set(selected);
     const saved = new Set((report?.projects || []).filter((row) => row.monitored).map((row) => row.ado_project_id));
@@ -242,13 +276,29 @@ export default function DevOpsHealthPage() {
 
       <section className="panel-pad mt-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 className="font-display text-xl">Projects to monitor</h2>
-            <p className="mt-1 text-sm text-mist-400">
-              Health checks only run on the projects you select. Load the list from Azure DevOps, then save and run a
-              check.
-            </p>
-          </div>
+          <button
+            type="button"
+            className="group flex min-w-0 items-start gap-2 text-left"
+            onClick={toggleProjects}
+            aria-expanded={projectsOpen}
+          >
+            <span className="mt-1 text-mist-400 group-hover:text-glass">
+              {projectsOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+            </span>
+            <span>
+              <h2 className="font-display text-xl">
+                Projects to monitor
+                <span className="ml-2 font-sans text-sm font-normal text-mist-500">
+                  {selected.length}/{report?.projects.length ?? 0}
+                </span>
+              </h2>
+              <p className="mt-1 text-sm text-mist-400">
+                {projectsOpen
+                  ? "Health checks only run on the projects you select. Load the list from Azure DevOps, then save and run a check."
+                  : `${selected.length} of ${report?.projects.length ?? 0} projects selected${dirty ? " · unsaved changes" : ""}.`}
+              </p>
+            </span>
+          </button>
           {canWrite && (
             <div className="flex flex-wrap gap-2">
               <button
@@ -271,44 +321,69 @@ export default function DevOpsHealthPage() {
             </div>
           )}
         </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {(report?.projects || []).map((project) => {
-            const checked = selected.includes(project.ado_project_id);
-            return (
-              <label
-                key={project.ado_project_id}
-                className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 ${
-                  checked ? "border-glass/40 bg-glass/5" : "border-white/10 bg-white/[0.02]"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={checked}
-                  disabled={!canWrite || Boolean(busy)}
-                  onChange={() =>
-                    setSelected((current) =>
-                      current.includes(project.ado_project_id)
-                        ? current.filter((id) => id !== project.ado_project_id)
-                        : [...current, project.ado_project_id]
-                    )
-                  }
-                />
-                <span>
-                  <span className="block text-sm font-medium">{project.name}</span>
-                  <span className="mt-0.5 block text-xs text-mist-500">
-                    {project.description || project.state}
-                    {project.last_scan_at ? ` · scanned ${when(project.last_scan_at)}` : ""}
-                  </span>
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        {report && report.projects.length === 0 && (
-          <p className="mt-3 text-sm text-mist-500">
-            No projects loaded yet. Use Load from Azure DevOps after the PAT is saved.
-          </p>
+        {projectsOpen && (
+          <>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <input
+                className="input max-w-xs"
+                placeholder="Filter projects…"
+                value={projectQuery}
+                onChange={(event) => setProjectQuery(event.target.value)}
+              />
+              {canWrite && (
+                <>
+                  <button className="btn-ghost" type="button" onClick={selectShown} disabled={Boolean(busy) || visibleProjects.length === 0}>
+                    Select shown
+                  </button>
+                  <button className="btn-ghost" type="button" onClick={clearShown} disabled={Boolean(busy) || visibleProjects.length === 0}>
+                    Clear shown
+                  </button>
+                </>
+              )}
+            </div>
+            <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+              {visibleProjects.map((project) => {
+                const checked = selected.includes(project.ado_project_id);
+                return (
+                  <label
+                    key={project.ado_project_id}
+                    className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3 py-3 ${
+                      checked ? "border-glass/40 bg-glass/5" : "border-white/10 bg-white/[0.02]"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={checked}
+                      disabled={!canWrite || Boolean(busy)}
+                      onChange={() =>
+                        setSelected((current) =>
+                          current.includes(project.ado_project_id)
+                            ? current.filter((id) => id !== project.ado_project_id)
+                            : [...current, project.ado_project_id]
+                        )
+                      }
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">{project.name}</span>
+                      <span className="mt-0.5 block text-xs text-mist-500">
+                        {project.description || project.state}
+                        {project.last_scan_at ? ` · scanned ${when(project.last_scan_at)}` : ""}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {report && report.projects.length === 0 && (
+              <p className="mt-3 text-sm text-mist-500">
+                No projects loaded yet. Use Load from Azure DevOps after the PAT is saved.
+              </p>
+            )}
+            {report && report.projects.length > 0 && visibleProjects.length === 0 && (
+              <p className="mt-3 text-sm text-mist-500">No projects match that filter.</p>
+            )}
+          </>
         )}
       </section>
 

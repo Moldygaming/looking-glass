@@ -1,4 +1,4 @@
-"""Background ingest, recommendations, DevOps health, and Entra directory sync."""
+"""Background ingest, recommendations, DevOps health, service work, and Entra directory sync."""
 
 from __future__ import annotations
 
@@ -22,6 +22,12 @@ async def run_ingest() -> None:
         results = await ingest_all(session)
         created = await refresh_recommendations(session)
         log.info("ingest complete rows=%s recommendations=%s", results, created)
+    async with SessionLocal() as session:
+        from app.services.service_desk import sync_devops_work
+
+        ado = await sync_devops_work(session)
+        if ado:
+            log.info("azure devops work items %s", ado)
 
 
 async def run_entra_sync() -> None:

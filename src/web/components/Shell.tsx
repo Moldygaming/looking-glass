@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 import {
+  ClipboardList,
   Cloud,
   Gauge,
   HeartPulse,
@@ -38,6 +39,10 @@ const sections: { label: string | null; items: NavItem[] }[] = [
       { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard, anyOf: ["finops.dashboards.read"] },
       { href: "/recommendations", label: "Savings", icon: Sparkles, anyOf: ["finops.recommendations.read"] },
     ],
+  },
+  {
+    label: "Service",
+    items: [{ href: "/service", label: "Work", icon: ClipboardList, anyOf: ["service.read"] }],
   },
   {
     label: "Infrastructure",

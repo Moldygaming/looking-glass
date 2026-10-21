@@ -30,6 +30,7 @@ from app.schemas import (
     RollupRow,
     SeriesPoint,
 )
+from app.services.azure_resources import friendly_resource_type
 from app.services.hierarchy import build_tree, classify_category
 from app.services.objects import (
     DEFAULT_PATH,
@@ -347,7 +348,7 @@ async def breakdown(
     return [
         BreakdownRow(
             key=str(r.key or "untagged"),
-            label=str(r.label or r.key or "untagged"),
+            label=_display_group_label(group_by, str(r.label or r.key or "untagged")),
             cost=round(float(r.cost), 2),
             amortized_cost=round(float(r.amortized), 2),
             share=round(float(r.cost) / total, 4),
@@ -578,9 +579,14 @@ async def line_items(
             .offset(offset)
         )
     ).scalars().all()
+    items = []
+    for row in rows:
+        item = LineItemOut.model_validate(row, from_attributes=True)
+        item.resource_type = friendly_resource_type(item.resource_type) or item.resource_type
+        items.append(item)
     return {
         "total": int(total or 0),
-        "items": [LineItemOut.model_validate(r, from_attributes=True) for r in rows],
+        "items": items,
     }
 
 
@@ -704,6 +710,7 @@ async def list_objects(
         prior_cost = float(prior_by_key.get(value, 0))
         cost = float(row["cost"])
         delta = None if prior_cost == 0 else round(((cost - prior_cost) / prior_cost) * 100, 1)
+        shown_type = friendly_resource_type(row["resource_type"]) if child_kind == "resource" else ""
         objects.append(
             CostObjectOut(
                 key=object_key(child_kind or "service", value),
@@ -718,6 +725,7 @@ async def list_objects(
                 currency=row["currency"],
                 service=row["service"],
                 category=object_category(child_kind or "", row["service"], row["resource_type"]),
+                resource_type=shown_type,
                 has_children=not leaf,
             )
         )
@@ -911,6 +919,12 @@ async def _tag_map(session: AsyncSession, user: CurrentUser) -> dict[str, list[s
         for key, value in (blob or {}).items():
             tags.setdefault(key, set()).add(str(value))
     return {key: sorted(values) for key, values in sorted(tags.items())}
+
+
+def _display_group_label(group_by: str, label: str) -> str:
+    if group_by == "resource_type":
+        return friendly_resource_type(label) or label
+    return label
 
 
 def _shares(rows, total: float, key_attr: str) -> list[BreakdownRow]:

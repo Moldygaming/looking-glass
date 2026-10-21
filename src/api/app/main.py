@@ -7,7 +7,7 @@ from sqlalchemy import select, text
 from app.config import settings
 from app.db import Base, engine, SessionLocal
 from app.models import Connection, CostLineItem
-from app.routers import admin, connections, costs, dashboards, devops, entra, entra_ops, me, recommendations, session as session_router
+from app.routers import admin, connections, costs, dashboards, devops, entra, entra_ops, me, recommendations, service, session as session_router
 from app.entra.sync import ensure_env_tenant
 from app.seed import ensure_devops_demo, ensure_iam, seed_if_empty
 from app.services.hierarchy import enrich_line
@@ -41,6 +41,7 @@ async def lifespan(_: FastAPI):
         await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_entra_apps_tenant_sp ON entra_applications (tenant_id, service_principal_id)"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS usage_location VARCHAR(8) DEFAULT ''"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_licenses JSONB DEFAULT '[]'::jsonb"))
+        await conn.execute(text("ALTER TABLE service_work_items ADD COLUMN IF NOT EXISTS assignee_email VARCHAR(320) DEFAULT ''"))
     if settings.seed_on_startup:
         async with SessionLocal() as session:
             await seed_if_empty(session)
@@ -75,6 +76,7 @@ app.include_router(dashboards.router)
 app.include_router(recommendations.router)
 app.include_router(connections.router)
 app.include_router(devops.router)
+app.include_router(service.router)
 app.include_router(admin.router)
 app.include_router(entra.router)
 app.include_router(entra_ops.router)

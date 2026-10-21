@@ -88,10 +88,13 @@ async def update_connection(
     if body.config is not None:
         incoming = public_config(body.config)
         if connection.provider == "azure_devops":
-            merged = dict(connection.config or {})
+            stored = connection.config or {}
+            merged = dict(stored)
             merged.update(incoming)
-            if "monitored_project_ids" not in incoming:
-                merged["monitored_project_ids"] = (connection.config or {}).get("monitored_project_ids") or []
+            for key in ("monitored_project_ids", "service_project_id", "service_project_name"):
+                if key not in incoming:
+                    fallback = stored.get(key)
+                    merged[key] = fallback if fallback is not None else ([] if key == "monitored_project_ids" else "")
             connection.config = merged
         else:
             connection.config = incoming
@@ -156,6 +159,8 @@ async def ingest_connection(
         raise HTTPException(status_code=400, detail=str(exc)[:2000]) from exc
     if connection.provider == "azure_devops":
         return {"written": written, "kind": "devops"}
+    if connection.provider == "freshservice":
+        return {"written": written, "kind": "service"}
     try:
         await refresh_recommendations(session)
     except Exception:  # noqa: BLE001 — cost rows are already stored

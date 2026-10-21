@@ -36,6 +36,37 @@ def evaluate_sso(
     )
 
 
+def _clean_groups(groups: list[str] | None) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in groups or []:
+        text = (item or "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+    return cleaned
+
+
+def coalesce_login_groups(
+    token_groups: list[str] | None,
+    synced_groups: list[str] | None,
+    stored_groups: list[str] | None,
+) -> list[str]:
+    """Groups used for an Entra sign-in.
+
+    A token that actually lists groups wins, combined with the directory sync.
+    Entra often omits the groups claim. An empty token must not wipe groups
+    already stored for the user or found in the synced directory.
+    """
+    token = _clean_groups(token_groups)
+    synced = _clean_groups(synced_groups)
+    if token:
+        return _clean_groups([*token, *synced])
+    return _clean_groups([*synced, *(stored_groups or [])])
+
+
 def group_ids_match(configured: str, groups: list[str]) -> bool:
     wanted = (configured or "").strip().lower()
     if not wanted:

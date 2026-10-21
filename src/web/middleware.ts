@@ -1,25 +1,32 @@
-import { auth } from "@/auth";
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-export default auth((req) => {
+// Cookie presence only. Importing auth() pulls the Entra callback into the
+// middleware worker, and that worker's response stream times out after
+// Microsoft redirects back. The Node auth route and /api/lg still verify the JWT.
+const SESSION_COOKIES = ["authjs.session-token", "__Secure-authjs.session-token"];
+
+function hasSessionCookie(req: NextRequest): boolean {
+  return req.cookies.getAll().some((cookie) =>
+    SESSION_COOKIES.some((name) => cookie.name === name || cookie.name.startsWith(`${name}.`))
+  );
+}
+
+export function middleware(req: NextRequest) {
   const path = req.nextUrl.pathname;
-  const publicPath =
-    path.startsWith("/login") ||
-    path.startsWith("/api/auth") ||
-    path.startsWith("/api/config") ||
-    path.startsWith("/_next") ||
-    path === "/favicon.ico";
-  if (!req.auth && !publicPath) {
+  const signedIn = hasSessionCookie(req);
+  if (path === "/login") {
+    if (!signedIn) return NextResponse.next();
+    return NextResponse.redirect(new URL("/", req.nextUrl.origin));
+  }
+  if (!signedIn) {
     const login = new URL("/login", req.nextUrl.origin);
     login.searchParams.set("callbackUrl", path);
     return NextResponse.redirect(login);
   }
-  if (req.auth && path === "/login") {
-    return NextResponse.redirect(new URL("/", req.nextUrl.origin));
-  }
   return NextResponse.next();
-});
+}
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!api/auth|api/config|_next/static|_next/image|favicon.ico|favicon.svg).*)"],
 };

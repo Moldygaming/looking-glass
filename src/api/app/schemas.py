@@ -102,11 +102,12 @@ class ConnectionSecretsIn(BaseModel):
     secret_access_key: str | None = None
     service_account_json: str | None = None
     pat: str | None = None
+    api_key: str | None = None
 
 
 class ConnectionIn(BaseModel):
     name: str
-    provider: Literal["azure", "aws", "gcp", "azure_devops"]
+    provider: Literal["azure", "aws", "gcp", "azure_devops", "freshservice"]
     config: dict[str, Any] = Field(default_factory=dict)
     secrets: ConnectionSecretsIn | None = None
     secret_ref: str | None = None
@@ -256,6 +257,7 @@ class CostObjectOut(BaseModel):
     currency: str
     service: str = ""
     category: str = ""
+    resource_type: str = ""
     has_children: bool = False
 
 
@@ -942,6 +944,67 @@ class DevOpsReportOut(BaseModel):
     repositories_with_pull_requests: list[DevOpsRepoPullRequestsOut] = Field(default_factory=list)
     repositories_with_stale_branches: list[DevOpsRepoStaleBranchesOut] = Field(default_factory=list)
     pipeline_alerts: list[DevOpsPipelineAlertOut] = Field(default_factory=list)
+
+
+class ServiceWorkItemOut(BaseModel):
+    id: UUID
+    connection_id: UUID
+    connection_name: str
+    source: str
+    kind: str
+    item_type: str = ""
+    external_id: str
+    title: str
+    state: str = ""
+    priority: str = ""
+    assignee: str = ""
+    requester: str = ""
+    project_name: str = ""
+    url: str = ""
+    is_open: bool = True
+    opened_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ServiceSummaryOut(BaseModel):
+    open_work_items: int = 0
+    open_tickets: int = 0
+    open_problems: int = 0
+    open_changes: int = 0
+    open_total: int = 0
+    last_sync_at: datetime | None = None
+
+
+class ServiceConnectionOut(BaseModel):
+    id: UUID
+    name: str
+    provider: str
+    status: str
+    credentials_configured: bool
+    last_ingest_at: datetime | None = None
+    last_error: str | None = None
+    service_project_id: str = ""
+    service_project_name: str = ""
+    domain: str = ""
+
+
+class ServiceAdoProjectOut(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    state: str = ""
+
+
+class ServiceProjectIn(BaseModel):
+    connection_id: UUID
+    project_id: str
+    project_name: str
+
+
+class ServiceSyncOut(BaseModel):
+    written: int = 0
+    connections: int = 0
+    errors: list[str] = Field(default_factory=list)
 
 
 CurrentUser.model_rebuild()

@@ -19,6 +19,7 @@ SECRET_CONFIG_KEYS = {
     "service_account_json",
     "pat",
     "personal_access_token",
+    "api_key",
 }
 
 CONNECTORS = {
@@ -41,6 +42,21 @@ async def run_connection_ingest(session: AsyncSession, connection_id: UUID) -> i
             result = await run_devops_scan(session, connection_id)
             return result.pull_requests + result.stale_branches + result.pipeline_alerts
         except Exception as exc:  # noqa: BLE001 — surface health-check errors on the connection
+            await session.rollback()
+            connection = await session.get(Connection, connection_id)
+            if connection is not None:
+                connection.status = "error"
+                connection.last_error = str(exc)[:2000]
+                await session.commit()
+            raise
+    if connection.provider == "freshservice":
+        if not _has_live_credentials(connection):
+            return 0
+        from app.services.service_desk import sync_service_connection
+
+        try:
+            return await sync_service_connection(session, connection)
+        except Exception as exc:  # noqa: BLE001 — surface Freshservice errors on the connection
             await session.rollback()
             connection = await session.get(Connection, connection_id)
             if connection is not None:
@@ -151,6 +167,8 @@ def connector_secret(connection: Connection) -> str | None:
         return secrets.get("service_account_json") or config.get("service_account_json")
     if connection.provider == "azure_devops":
         return secrets.get("pat") or secrets.get("personal_access_token") or config.get("pat")
+    if connection.provider == "freshservice":
+        return secrets.get("api_key") or config.get("api_key")
     return None
 
 
@@ -175,6 +193,8 @@ def _has_live_credentials(connection: Connection) -> bool:
         org = config.get("organization") or config.get("organization_url")
         pat = secrets.get("pat") or secrets.get("personal_access_token") or config.get("pat")
         return bool(org and pat)
+    if connection.provider == "freshservice":
+        return bool(config.get("domain") and (secrets.get("api_key") or config.get("api_key")))
     return False
 
 
@@ -183,6 +203,12 @@ async def test_connection(connection: Connection) -> str:
         from app.connectors.azure_devops import AzureDevOpsConnector
 
         return await AzureDevOpsConnector().test(
+            public_config(connection.config or {}), connector_secret(connection)
+        )
+    if connection.provider == "freshservice":
+        from app.connectors.freshservice import FreshserviceConnector
+
+        return await FreshserviceConnector().test(
             public_config(connection.config or {}), connector_secret(connection)
         )
     connector = CONNECTORS.get(connection.provider)

@@ -15,6 +15,8 @@ from urllib.parse import quote
 
 import httpx
 
+from app.services.service_records import ServiceRecord
+
 log = logging.getLogger("looking-glass.azure-devops")
 API = "7.1"
 DEFAULT_STALE_DAYS = 30
@@ -274,6 +276,42 @@ class AzureDevOpsConnector:
             pipeline_alerts=pipeline_alerts,
         )
 
+    async def list_work_items(
+        self,
+        config: dict[str, Any],
+        secret: str | None,
+        project_name: str,
+        project_id: str = "",
+    ) -> list[ServiceRecord]:
+        _, base = parse_organization(config)
+        if not secret:
+            raise AzureDevOpsError("A personal access token is required.")
+        name = project_name.strip()
+        if not name and not project_id.strip():
+            raise AzureDevOpsError("Choose an Azure DevOps project before syncing work items.")
+        # The project id is a GUID and does not need escaping. @project is scoped by that URL.
+        segment = quote((project_id or name).strip(), safe="-")
+        params = {"api-version": API, "$top": work_item_top()}
+        async with httpx.AsyncClient(timeout=60, auth=httpx.BasicAuth("", secret)) as client:
+            payload = await _post(
+                client,
+                f"{base}/{segment}/_apis/wit/wiql",
+                params,
+                {"query": work_item_wiql()},
+            )
+            ids = _work_item_ids(payload)
+            if not ids:
+                return []
+            batch = await _post_work_items(client, base, ids)
+        records: list[ServiceRecord] = []
+        for row in batch.get("value") or []:
+            if not isinstance(row, dict):
+                continue
+            record = normalize_work_item(row, org_url=base, project_name=name or project_id)
+            if record is not None:
+                records.append(record)
+        return records
+
 
 def _project(row: dict[str, Any], org: str, base: str) -> AdoProject:
     name = str(row.get("name") or "")
@@ -466,27 +504,91 @@ async def _get_list(client: httpx.AsyncClient, url: str, params: dict[str, Any])
     return items
 
 
+def _auth_message(auth_hint: str) -> str:
+    if auth_hint == "work_items":
+        return (
+            "Azure DevOps rejected the token. Grant the PAT Work Items (Read) "
+            "and Project and team (Read), and check the organisation name."
+        )
+    return (
+        "Azure DevOps rejected the token. Grant the PAT Code (Read), Build (Read), "
+        "and Project and team (Read), and check the organisation name."
+    )
+
+
 async def _get(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> dict[str, Any]:
+    return await _request(client, "GET", url, params)
+
+
+async def _post(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, Any],
+    body: dict[str, Any],
+    *,
+    attempts: int = 2,
+) -> dict[str, Any]:
+    return await _request(
+        client, "POST", url, params, body, auth_hint="work_items", attempts=attempts, quick=True
+    )
+
+
+async def _post_work_items(client: httpx.AsyncClient, base: str, ids: list[int]) -> dict[str, Any]:
+    url = f"{base}/_apis/wit/workitemsbatch"
+    params = {"api-version": API}
+    try:
+        return await _post(client, url, params, {"ids": ids, "fields": list(WORK_ITEM_FIELDS)})
+    except AzureDevOpsError as exc:
+        text = str(exc)
+        if "Priority" not in text and "TF51535" not in text:
+            raise
+        return await _post(
+            client,
+            url,
+            params,
+            {"ids": ids, "fields": [field for field in WORK_ITEM_FIELDS if field != "Microsoft.VSTS.Common.Priority"]},
+        )
+
+
+async def _request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    params: dict[str, Any],
+    body: dict[str, Any] | None = None,
+    auth_hint: str = "default",
+    attempts: int = 4,
+    quick: bool = False,
+) -> dict[str, Any]:
     last_error = "Azure DevOps request failed."
-    for attempt in range(4):
-        response = await client.get(url, params=params)
+    total = max(1, attempts)
+    for attempt in range(total):
+        if method == "POST":
+            response = await client.post(url, params=params, json=body)
+        else:
+            response = await client.get(url, params=params)
         if response.status_code == 429:
-            wait = int(response.headers.get("Retry-After") or min(8 * (attempt + 1), 30))
+            default_wait = 2 if quick else min(8 * (attempt + 1), 30)
+            wait = int(response.headers.get("Retry-After") or default_wait)
+            if quick:
+                wait = min(wait, 4)
             log.warning("Azure DevOps 429 on %s — waiting %ss", url, wait)
             await _sleep(wait)
             continue
         if response.status_code in {401, 403}:
-            raise AzureDevOpsError(
-                "Azure DevOps rejected the token. Grant the PAT Code (Read), Build (Read), "
-                "and Project and team (Read), and check the organisation name."
-            )
+            raise AzureDevOpsError(_auth_message(auth_hint))
         if response.status_code >= 400:
             last_error = _error_message(response)
-            if response.status_code >= 500 and attempt < 3:
-                await _sleep(min(4 * (attempt + 1), 15))
+            # Work-item calls retry once, briefly. A long sleep outlasts the portal
+            # timeout and the user only sees a generic failure.
+            if response.status_code >= 500 and attempt + 1 < total:
+                await _sleep(2 if quick else min(4 * (attempt + 1), 15))
                 continue
             raise AzureDevOpsError(last_error)
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise AzureDevOpsError(f"Azure DevOps returned a response that was not JSON ({response.status_code}).") from exc
         token = response.headers.get("x-ms-continuationtoken")
         if token and isinstance(data, dict) and not data.get("continuationToken"):
             data["continuationToken"] = token
@@ -497,8 +599,15 @@ async def _get(client: httpx.AsyncClient, url: str, params: dict[str, Any]) -> d
 def _error_message(response: httpx.Response) -> str:
     try:
         body = response.json()
-        message = body.get("message") or body.get("typeKey") or body
-        return f"Azure DevOps {response.status_code}: {message}"
+        if isinstance(body, dict):
+            message = body.get("message") or body.get("typeKey") or ""
+            inner = body.get("innerException")
+            if isinstance(inner, dict) and inner.get("message"):
+                message = f"{message} {inner.get('message')}".strip()
+            message = message or body
+        else:
+            message = body
+        return f"Azure DevOps {response.status_code}: {message}"[:500]
     except Exception:  # noqa: BLE001
         text = (response.text or "")[:400]
         return f"Azure DevOps {response.status_code}: {text or response.reason_phrase}"
@@ -515,6 +624,132 @@ def _parse_dt(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+WORK_ITEM_LIMIT = 200
+WORK_ITEM_FIELDS = (
+    "System.Id",
+    "System.Title",
+    "System.WorkItemType",
+    "System.State",
+    "System.AssignedTo",
+    "System.ChangedDate",
+    "System.CreatedDate",
+    "Microsoft.VSTS.Common.Priority",
+    "System.TeamProject",
+)
+CLOSED_WORK_ITEM_STATES = {"closed", "removed", "done", "completed"}
+
+
+def escape_wiql_literal(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def work_item_top(limit: int = WORK_ITEM_LIMIT) -> int:
+    return max(1, min(int(limit), WORK_ITEM_LIMIT))
+
+
+def work_item_wiql(project_name: str | None = None) -> str:
+    """Flat work-item query.
+
+    The REST API applies the row cap with the $top query parameter. SELECT TOP
+    inside the WIQL text is not that cap, and a project-wide query without $top
+    fails once the project is large. @project is filled from the project in the URL.
+    """
+    if project_name:
+        project = f"'{escape_wiql_literal(project_name)}'"
+    else:
+        project = "@project"
+    return (
+        "SELECT [System.Id] FROM WorkItems "
+        f"WHERE [System.TeamProject] = {project} "
+        "AND [System.State] <> 'Removed' "
+        "ORDER BY [System.ChangedDate] DESC"
+    )
+
+
+def work_item_is_open(state: str) -> bool:
+    return state.strip().lower() not in CLOSED_WORK_ITEM_STATES
+
+
+def _work_item_ids(payload: dict[str, Any]) -> list[int]:
+    ids: list[int] = []
+    for row in payload.get("workItems") or []:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        try:
+            ids.append(int(row["id"]))
+        except (TypeError, ValueError):
+            continue
+        if len(ids) >= WORK_ITEM_LIMIT:
+            break
+    return ids
+
+
+def _identity_parts(value: Any) -> tuple[str, str]:
+    """UPN plus the same address for matching.
+
+    uniqueName is the Entra user principal name when the identity is backed by
+    a directory. Display name is used only when Azure DevOps did not send an
+    address, such as DOMAIN\\user.
+    """
+    if isinstance(value, dict):
+        email = _email_text(value.get("uniqueName")) or _email_text(value.get("mail"))
+        display = str(value.get("displayName") or "").strip()
+        identity = email or display or str(value.get("uniqueName") or "").strip()
+        return identity, email
+    text = "" if value is None else str(value).strip()
+    if "<" in text and text.endswith(">"):
+        name, _, rest = text.rpartition("<")
+        email = _email_text(rest[:-1])
+        return email or name.strip() or text, email
+    email = _email_text(text)
+    return (email or text), email
+
+
+def _email_text(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text or "@" not in text or any(ch.isspace() for ch in text):
+        return ""
+    if text.lower().startswith("vstfs:"):
+        return ""
+    local, _, domain = text.partition("@")
+    if not local or "." not in domain or any(ch in text for ch in "<>"):
+        return ""
+    return text
+
+
+def normalize_work_item(raw: dict[str, Any], *, org_url: str, project_name: str) -> ServiceRecord | None:
+    fields = raw.get("fields") or {}
+    if not isinstance(fields, dict):
+        fields = {}
+    item_id = raw.get("id")
+    if item_id is None:
+        item_id = fields.get("System.Id")
+    if item_id is None:
+        return None
+    project = str(fields.get("System.TeamProject") or project_name or "").strip()
+    state = str(fields.get("System.State") or "")
+    priority = fields.get("Microsoft.VSTS.Common.Priority")
+    title = str(fields.get("System.Title") or f"Work item {item_id}")
+    encoded = quote(project or project_name, safe="")
+    assignee, assignee_email = _identity_parts(fields.get("System.AssignedTo"))
+    return ServiceRecord(
+        source="azure_devops",
+        kind="work_item",
+        external_id=str(item_id),
+        title=title,
+        item_type=str(fields.get("System.WorkItemType") or "Work item"),
+        state=state,
+        priority="" if priority is None else str(priority),
+        assignee=assignee,
+        assignee_email=assignee_email,
+        project_name=project or project_name,
+        url=f"{org_url.rstrip('/')}/{encoded}/_workitems/edit/{item_id}",
+        is_open=work_item_is_open(state),
+        opened_at=_parse_dt(fields.get("System.CreatedDate")),
+        updated_at=_parse_dt(fields.get("System.ChangedDate")),
+    )
 
 
 def _web_link(row: dict[str, Any]) -> str:

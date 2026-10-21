@@ -4,7 +4,8 @@ import { signIn } from "next-auth/react";
 import { FormEvent, useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
 
-function errorMessage(code: string | null): string | null {
+function errorMessage(code: string | null, reason: string | null): string | null {
+  if (reason) return reason;
   if (!code) return null;
   if (code === "AccessDenied") {
     return "You signed in with Entra ID but do not have access to Looking Glass. You must be in the platform admin group, or an administrator must assign you a role in the portal.";
@@ -14,6 +15,9 @@ function errorMessage(code: string | null): string | null {
   }
   if (code === "Configuration") {
     return "Sign-in is not configured. Check AUTH_SECRET and the Entra app registration.";
+  }
+  if (code === "Callback" || code === "OAuthCallback") {
+    return "Microsoft accepted the sign-in, but the portal could not finish it. The web container could not reach the API in time. Check API_URL.";
   }
   return "Sign-in failed. Try again or use the break-glass account.";
 }
@@ -28,7 +32,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setError(errorMessage(params.get("error")));
+    setError(errorMessage(params.get("error"), params.get("reason")));
     fetch("/api/config")
       .then((res) => res.json())
       .then((data) => {
@@ -58,7 +62,7 @@ export default function LoginPage() {
       return;
     }
     if (result.error) {
-      setError(errorMessage(result.error) || "Break-glass username or password is incorrect.");
+      setError(errorMessage(result.error, null) || "Break-glass username or password is incorrect.");
       return;
     }
     window.location.href = result.url || callbackUrl;

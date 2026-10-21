@@ -282,6 +282,7 @@ export default function CostsPage() {
                 <tr>
                   <th className="pb-2">When</th>
                   <th className="pb-2">Resource</th>
+                  <th className="pb-2">Type</th>
                   <th className="pb-2">Service</th>
                   <th className="pb-2 text-right">Cost</th>
                 </tr>
@@ -291,13 +292,14 @@ export default function CostsPage() {
                   <tr key={item.id} className="border-t border-white/5">
                     <td className="py-2 font-mono text-xs text-mist-400">{item.usage_date}</td>
                     <td className="py-2">{item.resource_name}</td>
+                    <td className="py-2 text-mist-400">{item.resource_type || "—"}</td>
                     <td className="py-2 text-mist-400">{item.service}</td>
                     <td className="py-2 text-right font-mono">{money(item.cost, item.currency)}</td>
                   </tr>
                 ))}
                 {!lines?.items.length && (
                   <tr>
-                    <td colSpan={4} className="py-6 text-center text-mist-500">
+                    <td colSpan={5} className="py-6 text-center text-mist-500">
                       No line items in this scope.
                     </td>
                   </tr>

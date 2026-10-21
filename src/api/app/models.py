@@ -588,3 +588,33 @@ class DevOpsPipelineAlert(Base):
     last_run_url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
     url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
     recent_results: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+
+
+class ServiceWorkItem(Base):
+    __tablename__ = "service_work_items"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "source", "kind", "external_id", name="uq_service_work_item"),
+        Index("ix_service_work_connection_kind", "connection_id", "kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("connections.id", ondelete="CASCADE"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(64))
+    item_type: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    title: Mapped[str] = mapped_column(String(512))
+    state: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    status_code: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    priority: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    assignee: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    assignee_email: Mapped[str] = mapped_column(String(320), default="", server_default="")
+    requester: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    project_name: Mapped[str] = mapped_column(String(256), default="", server_default="")
+    url: Mapped[str] = mapped_column(String(1024), default="", server_default="")
+    is_open: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", index=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -80,6 +80,7 @@ export type CostObject = {
   currency: string;
   service?: string;
   category?: string;
+  resource_type?: string;
   has_children: boolean;
 };
 
@@ -153,6 +154,7 @@ export type LineItems = {
     provider: string;
     account_name: string;
     resource_name: string;
+    resource_type?: string;
     service: string;
     meter: string;
     region: string;
@@ -642,4 +644,59 @@ export type EntraApp = {
   last_synced_at?: string | null;
   app_roles: EntraAppRole[];
   assignments: EntraAppAssignment[];
+};
+
+export type ServiceWorkItem = {
+  id: string;
+  connection_id: string;
+  connection_name: string;
+  source: string;
+  kind: string;
+  item_type: string;
+  external_id: string;
+  title: string;
+  state: string;
+  priority: string;
+  assignee: string;
+  requester: string;
+  project_name: string;
+  url: string;
+  is_open: boolean;
+  opened_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ServiceSummary = {
+  open_work_items: number;
+  open_tickets: number;
+  open_problems: number;
+  open_changes: number;
+  open_total: number;
+  last_sync_at?: string | null;
+};
+
+export type ServiceConnection = {
+  id: string;
+  name: string;
+  provider: string;
+  status: string;
+  credentials_configured: boolean;
+  last_ingest_at?: string | null;
+  last_error?: string | null;
+  service_project_id: string;
+  service_project_name: string;
+  domain: string;
+};
+
+export type ServiceAdoProject = {
+  id: string;
+  name: string;
+  description: string;
+  state: string;
+};
+
+export type ServiceSync = {
+  written: number;
+  connections: number;
+  errors: string[];
 };
